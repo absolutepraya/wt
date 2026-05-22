@@ -1,0 +1,1247 @@
+#!/usr/bin/env python3
+"""wt — universal git worktree CLI. See SPEC.md."""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+# === config ===
+
+import tomllib
+from dataclasses import dataclass, field
+
+
+class ConfigNotFound(Exception):
+    """Raised when no .wt/config.toml is found walking up from start dir."""
+
+
+class ConfigError(Exception):
+    """Raised when .wt/config.toml is malformed or has invalid values."""
+
+
+@dataclass
+class Config:
+    repo_root: Path
+    worktree_path: str = ".worktrees"
+    port_offset_interval: int = 10
+    max_slots: int = 20
+    name_strategy: str = "cities"
+    branch_template: str = "{user}/{name}"
+    default_base: str = "origin/main"
+    setup: list[str] = field(default_factory=list)
+    teardown: list[str] = field(default_factory=list)
+
+
+_VALID_NAME_STRATEGIES = {"cities", "word_pairs"}
+
+
+def _find_config_path(start: Path) -> Path:
+    """Walk up from `start` until we find `.wt/config.toml` or hit /."""
+    current = start.resolve()
+    while True:
+        candidate = current / ".wt" / "config.toml"
+        if candidate.is_file():
+            return candidate
+        if current.parent == current:
+            raise ConfigNotFound(
+                f"no .wt/config.toml found walking up from {start}"
+            )
+        current = current.parent
+
+
+def _resolve_main_worktree(start: Path, fallback: Path) -> Path:
+    """Resolve the main worktree's absolute path, regardless of which
+    worktree we're currently in. The main is always the first entry of
+    `git worktree list --porcelain`. Falls back to `fallback` if git
+    isn't available or `start` isn't inside a repo (e.g. in tests with
+    bare tmp dirs)."""
+    import subprocess as _sp
+    try:
+        proc = _sp.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=start, capture_output=True, text=True, check=True,
+        )
+    except (_sp.CalledProcessError, FileNotFoundError):
+        return fallback
+    for line in proc.stdout.splitlines():
+        if line.startswith("worktree "):
+            return Path(line[len("worktree "):]).resolve()
+    return fallback
+
+
+def load_config(start: Path) -> Config:
+    cfg_path = _find_config_path(start)
+    # `.wt/config.toml` is committed, so every worktree's checkout contains
+    # it — walking up just finds the closest one. But state and project_id
+    # must always be keyed off the MAIN worktree so `wt` works the same
+    # whether invoked from main or from any linked worktree.
+    repo_root = _resolve_main_worktree(start, fallback=cfg_path.parent.parent)
+
+    with cfg_path.open("rb") as f:
+        raw = tomllib.load(f)
+
+    cfg = Config(repo_root=repo_root)
+    for key in (
+        "worktree_path",
+        "port_offset_interval",
+        "max_slots",
+        "name_strategy",
+        "branch_template",
+        "default_base",
+        "setup",
+        "teardown",
+    ):
+        if key in raw:
+            setattr(cfg, key, raw[key])
+
+    if cfg.name_strategy not in _VALID_NAME_STRATEGIES:
+        raise ConfigError(
+            f"invalid name_strategy={cfg.name_strategy!r}; "
+            f"expected one of {sorted(_VALID_NAME_STRATEGIES)}"
+        )
+
+    if "/" not in cfg.default_base:
+        raise ConfigError(
+            f"invalid default_base={cfg.default_base!r}; "
+            "must be of the form '<remote>/<branch>'"
+        )
+
+    return cfg
+
+
+# === project_id ===
+
+import hashlib
+import os
+
+
+def project_id(repo_root: Path) -> str:
+    """Stable, human-readable id for a repo: <basename>-<sha8>."""
+    abs_path = str(repo_root.resolve())
+    digest = hashlib.sha1(abs_path.encode("utf-8")).hexdigest()[:8]
+    return f"{repo_root.name}-{digest}"
+
+
+def state_paths(pid: str) -> tuple[Path, Path]:
+    """Return (state_file, lock_file) paths under ~/.wt/."""
+    base = Path(os.environ["HOME"]) / ".wt"
+    return base / f"{pid}.json", base / f"{pid}.lock"
+
+
+# === state ===
+
+import contextlib
+import fcntl
+import json
+
+
+class SlotsFull(Exception):
+    """Raised when no free slot is available within max_slots."""
+
+
+@contextlib.contextmanager
+def _locked(pid: str):
+    state_file, lock_file = state_paths(pid)
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    lock_file.touch(exist_ok=True)
+    with lock_file.open("w") as lf:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+
+
+def _empty_state() -> dict:
+    return {"version": 1, "project_root": "", "slots": {}}
+
+
+def load_state(pid: str) -> dict:
+    """Read state for `pid`. Returns an empty state shape if missing."""
+    state_file, _ = state_paths(pid)
+    if not state_file.exists():
+        return _empty_state()
+    return json.loads(state_file.read_text())
+
+
+def save_state(pid: str, state: dict) -> None:
+    state_file, _ = state_paths(pid)
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp = state_file.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=2) + "\n")
+    tmp.replace(state_file)
+
+
+def allocate_slot(pid: str, *, max_slots: int, entry: dict) -> int:
+    """Acquire flock, find lowest free slot in [1, max_slots], save, return it."""
+    with _locked(pid):
+        state = load_state(pid)
+        used = {int(k) for k in state["slots"]}
+        for slot in range(1, max_slots + 1):
+            if slot not in used:
+                state["slots"][str(slot)] = entry
+                save_state(pid, state)
+                return slot
+        raise SlotsFull(
+            f"no free slots (max_slots={max_slots}, used={sorted(used)})"
+        )
+
+
+def free_slot(pid: str, slot: int) -> None:
+    with _locked(pid):
+        state = load_state(pid)
+        state["slots"].pop(str(slot), None)
+        save_state(pid, state)
+
+
+# === naming ===
+
+import random
+import secrets
+
+CITIES = [
+    "adelaide", "amsterdam", "antwerp", "athens", "auckland",
+    "bangkok", "barcelona", "beirut", "berlin", "bogota",
+    "boston", "bratislava", "brisbane", "brussels", "bucharest",
+    "budapest", "buenos-aires", "cairo", "cape-town", "casablanca",
+    "chicago", "copenhagen", "dakar", "delhi", "denver",
+    "doha", "dubai", "dublin", "edinburgh", "florence",
+    "geneva", "hamburg", "hanoi", "havana", "helsinki",
+    "hobart", "honolulu", "istanbul", "jakarta", "jerusalem",
+    "johannesburg", "kelowna", "kiev", "kingston", "kuala-lumpur",
+    "kyoto", "lagos", "lima", "lisbon", "ljubljana",
+    "london", "los-angeles", "lyon", "madrid", "manila",
+    "marrakech", "marseille", "melbourne", "mexico-city", "milan",
+    "minsk", "montevideo", "montreal", "moscow", "mumbai",
+    "munich", "nairobi", "naples", "newport-beach", "new-orleans",
+    "nice", "osaka", "oslo", "ottawa", "panama-city",
+    "paris", "perth", "porto", "prague", "quebec",
+    "quito", "reykjavik", "riga", "rio", "rome",
+    "rotterdam", "san-francisco", "san-juan", "santiago", "sao-paulo",
+    "sarajevo", "seattle", "seoul", "seville", "shanghai",
+    "singapore", "sofia", "stockholm", "strasbourg", "sydney",
+    "taipei", "tallinn", "tokyo", "toronto", "tunis",
+    "turin", "valencia", "vancouver", "venice", "vienna",
+    "vilnius", "warsaw", "wellington", "winnipeg", "yokohama",
+    "zagreb", "zurich",
+]
+
+ADJECTIVES = [
+    "amber", "ancient", "azure", "bold", "brave",
+    "bright", "calm", "cedar", "clever", "cobalt",
+    "copper", "coral", "cosmic", "crimson", "crystal",
+    "dapper", "deep", "eager", "ember", "fair",
+    "fancy", "fierce", "frosty", "gentle", "gilded",
+    "golden", "grand", "hidden", "humble", "jade",
+    "keen", "kind", "lively", "lucky", "lunar",
+    "mellow", "merry", "mighty", "misty", "mystic",
+    "noble", "olive", "opal", "pearl", "plucky",
+    "polar", "proud", "quick", "quiet", "rapid",
+    "regal", "ruby", "rustic", "sage", "scarlet",
+    "secret", "shimmer", "silent", "silken", "silver",
+    "smart", "smooth", "snowy", "solar", "sterling",
+    "stout", "sturdy", "sunny", "swift", "tidy",
+    "topaz", "vast", "vivid", "wandering", "warm",
+    "wild", "wise", "woven", "young", "zealous",
+]
+
+NOUNS = [
+    "anchor", "arrow", "badger", "beacon", "blossom",
+    "bramble", "breeze", "brook", "canyon", "cascade",
+    "cedar", "cinder", "cliff", "comet", "cove",
+    "crane", "crest", "delta", "echo", "ember",
+    "fern", "field", "flame", "forest", "fox",
+    "gale", "garnet", "glen", "grove", "harbor",
+    "haven", "hawk", "heron", "horizon", "isle",
+    "ivy", "jasper", "knoll", "lake", "lantern",
+    "leaf", "lily", "lotus", "marsh", "meadow",
+    "mesa", "mist", "moon", "moss", "mountain",
+    "oak", "ocean", "orchid", "otter", "owl",
+    "peak", "pine", "pond", "prairie", "raven",
+    "reef", "ridge", "river", "rose", "salt",
+    "sand", "shore", "spruce", "star", "stone",
+    "stream", "summit", "sunrise", "thicket", "tide",
+    "tiger", "tulip", "valley", "vine", "willow",
+    "wolf", "wren",
+]
+
+
+def generate_name(strategy: str, *, used: set[str], _max_tries: int = 5) -> str:
+    """Pick a name from the configured wordlist. On collision, retry; if all
+    retries collide, do a deterministic scan over the wordlist (cities only);
+    on full exhaustion, fall back to `<token>-<4-char-hex>`."""
+    if strategy == "cities":
+        wordlist = CITIES
+
+        def make():
+            return random.choice(CITIES)
+
+    elif strategy == "word_pairs":
+        wordlist = None
+
+        def make():
+            return f"{random.choice(ADJECTIVES)}-{random.choice(NOUNS)}"
+
+    else:
+        raise ValueError(f"unknown name strategy: {strategy!r}")
+
+    # 1. Random retries
+    for _ in range(_max_tries):
+        candidate = make()
+        if candidate not in used:
+            return candidate
+
+    # 2. Deterministic scan for finite wordlists
+    if wordlist is not None:
+        for candidate in wordlist:
+            if candidate not in used:
+                return candidate
+
+    # 3. Total exhaustion: append hex suffix
+    return f"{make()}-{secrets.token_hex(2)}"
+
+
+# === git_ops ===
+
+import subprocess
+
+
+class GitError(Exception):
+    pass
+
+
+def _git(args: list[str], *, cwd: Path, check: bool = True) -> subprocess.CompletedProcess:
+    """Run a git command, capturing both stdout and stderr."""
+    proc = subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True
+    )
+    if check and proc.returncode != 0:
+        raise GitError(
+            f"git {' '.join(args)} failed (exit {proc.returncode}):\n"
+            f"{proc.stderr.strip()}"
+        )
+    return proc
+
+
+def git_fetch(repo: Path, remote: str, branch: str) -> None:
+    _git(["fetch", remote, branch], cwd=repo)
+
+
+def list_worktrees(repo: Path) -> list[dict]:
+    """Parse `git worktree list --porcelain` into a list of dicts.
+
+    Each dict has keys: path, head, branch (None if detached), bare (bool)."""
+    out = _git(["worktree", "list", "--porcelain"], cwd=repo).stdout
+    worktrees: list[dict] = []
+    current: dict = {}
+    for line in out.splitlines():
+        if not line:
+            if current:
+                worktrees.append(current)
+                current = {}
+            continue
+        if line.startswith("worktree "):
+            current["path"] = line[len("worktree "):]
+        elif line.startswith("HEAD "):
+            current["head"] = line[len("HEAD "):]
+        elif line.startswith("branch "):
+            ref = line[len("branch "):]
+            current["branch"] = ref.removeprefix("refs/heads/")
+        elif line == "bare":
+            current["bare"] = True
+        elif line == "detached":
+            current["branch"] = None
+    if current:
+        worktrees.append(current)
+    return worktrees
+
+
+def branch_in_use(repo: Path, branch: str) -> str | None:
+    """Return the worktree path that has `branch` checked out, or None."""
+    for w in list_worktrees(repo):
+        if w.get("branch") == branch:
+            return w["path"]
+    return None
+
+
+def has_unmerged_commits(repo: Path, branch: str, base_ref: str) -> bool:
+    """True if `branch` has commits not in `base_ref` and not in its upstream.
+
+    Mirrors the safety check `git branch -d` performs."""
+    # Commits on branch not in base_ref:
+    not_in_base = _git(
+        ["rev-list", f"{base_ref}..{branch}"], cwd=repo
+    ).stdout.strip().splitlines()
+    if not not_in_base:
+        return False
+
+    # Try to find upstream of `branch`. If it has one, also exclude commits
+    # already pushed there.
+    upstream_proc = _git(
+        ["rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"],
+        cwd=repo, check=False,
+    )
+    if upstream_proc.returncode == 0:
+        upstream = upstream_proc.stdout.strip()
+        not_in_either = _git(
+            ["rev-list", f"{base_ref}..{branch}", f"^{upstream}"], cwd=repo
+        ).stdout.strip().splitlines()
+        return bool(not_in_either)
+
+    return True
+
+
+def _branch_has_upstream(repo: Path, branch: str) -> bool:
+    """Return True if `branch` has an upstream tracking ref configured."""
+    proc = _git(
+        ["rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"],
+        cwd=repo, check=False,
+    )
+    return proc.returncode == 0
+
+
+def _unmerged_commits_summary(
+    repo: Path, branch: str, base_ref: str, *, has_upstream: bool
+) -> str:
+    """Build a human-readable summary of commits on `branch` not in `base_ref`.
+
+    Runs `git log --oneline base_ref..branch` and formats the result.
+    Appends a no-upstream hint when `has_upstream` is False."""
+    log_lines = _git(
+        ["log", "--oneline", f"{base_ref}..{branch}"], cwd=repo
+    ).stdout.strip().splitlines()
+
+    indented = "\n".join(f"  {line}" for line in log_lines) if log_lines else "  (none)"
+
+    msg = (
+        f"branch {branch!r} has unmerged commits not in {base_ref!r} "
+        f"and not pushed upstream:\n{indented}\n"
+        "Use --force to remove anyway, or --keep-branch to keep the branch."
+    )
+
+    if not has_upstream:
+        msg += (
+            "\n(this branch has no upstream — push to a remote or use --force to discard)"
+        )
+
+    return msg
+
+
+def add_worktree(
+    repo: Path, path: Path, branch: str, base_ref: str, *, track_remote: bool
+) -> None:
+    """`git worktree add`. If `track_remote`, use `-B branch base_ref` so the
+    local branch tracks `base_ref`. Otherwise, use `-b branch base_ref`."""
+    flag = "-B" if track_remote else "-b"
+    _git(["worktree", "add", flag, branch, str(path), base_ref], cwd=repo)
+
+
+def remove_worktree(repo: Path, path: Path, *, force: bool = False) -> None:
+    args = ["worktree", "remove"]
+    if force:
+        args.append("--force")
+    args.append(str(path))
+    _git(args, cwd=repo)
+
+
+def delete_branch(repo: Path, branch: str, *, force: bool = False) -> None:
+    flag = "-D" if force else "-d"
+    _git(["branch", flag, branch], cwd=repo)
+
+
+# === template ===
+
+import datetime
+
+
+def render_branch_template(template: str, *, name: str) -> str:
+    return template.format(
+        name=name,
+        user=os.environ["USER"],
+        date=datetime.date.today().isoformat(),
+    )
+
+
+# === commands ===
+
+
+class SetupFailed(Exception):
+    pass
+
+
+class TeardownFailed(Exception):
+    pass
+
+
+def _term_width(default: int = 80) -> int:
+    """Best-effort current terminal column count. Falls back to 80."""
+    import shutil
+    return shutil.get_terminal_size((default, 24)).columns
+
+
+import re as _re
+
+_ANSI_RE = _re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _visual_len(s: str) -> int:
+    """Length of `s` ignoring ANSI escape sequences. Used so colored cells
+    in `_render_table` don't blow out column widths."""
+    return len(_ANSI_RE.sub("", s))
+
+
+def _green(s: str) -> str:
+    # Only emit color when stdout is a real tty — keeps `wt ls | head`,
+    # `wt ls > file`, and CI logs free of raw escape sequences.
+    if not sys.stdout.isatty():
+        return s
+    return f"\x1b[32m{s}\x1b[0m"
+
+
+def _pad_visual(text: str, width: int) -> str:
+    """Right-pad `text` to `width` *visible* columns (ANSI codes free)."""
+    return text + " " * max(width - _visual_len(text), 0)
+
+
+def _divider() -> str:
+    """A heavy-rule horizontal separator the full width of the terminal.
+    Heavy (`═`) reads clearly even when adjacent to subprocess output that
+    may itself contain ASCII dividers."""
+    return "═" * _term_width()
+
+
+def _prompt_continue_or_stop(reason: str) -> bool:
+    """Print `reason` to stderr, then prompt the user. Returns True to
+    continue with the destructive action, False to stop. On non-tty (CI,
+    pipes) and EOF, defaults to stop — destructive ops never proceed
+    silently."""
+    print(f"wt: {reason}", file=sys.stderr)
+    if not sys.stdin.isatty():
+        print(
+            "wt: stdin is not a tty; defaulting to stop. "
+            "Use --force to override.",
+            file=sys.stderr,
+        )
+        return False
+    try:
+        answer = input(
+            "Continue removal anyway? [c]ontinue / [s]top (default: stop): "
+        ).strip().lower()
+    except EOFError:
+        return False
+    return answer in {"c", "continue"}
+
+
+def _print_section(title: str, *, trailing_divider: bool = False, **fields: str) -> None:
+    """Print a status block: leading divider, title + fields, optional
+    trailing divider. By default only the leading divider is printed so
+    intermediate sections collapse cleanly into the next `_run_scripts`
+    step (its leading divider doubles as our closer). Pass
+    `trailing_divider=True` on the final section of a command so the
+    output ends with a clean divider."""
+    print(_divider())
+    print(title)
+    width = max((len(k) for k in fields), default=0)
+    for key, value in fields.items():
+        print(f"  {key:<{width}}  {value}")
+    if trailing_divider:
+        print(_divider())
+
+
+def _split_default_base(default_base: str) -> tuple[str, str]:
+    """`origin/main` -> (`origin`, `main`)."""
+    remote, _, branch = default_base.partition("/")
+    return remote, branch
+
+
+def _setup_env(*, cfg: Config, name: str, path: Path, branch: str, slot: int) -> dict:
+    env = os.environ.copy()
+    env.update({
+        "WT_ROOT_PATH": str(cfg.repo_root),
+        "WT_WORKSPACE_NAME": name,
+        "WT_WORKSPACE_PATH": str(path),
+        "WT_BRANCH": branch,
+        "WT_SLOT": str(slot),
+        "WT_PORT_BASE": str(slot * cfg.port_offset_interval),
+    })
+    return env
+
+
+def _compact_cmd(cmd: str) -> str:
+    """One-line, terminal-width-truncated rendering of a multi-line shell
+    command so the progress label fits on a single row."""
+    flat = " ".join(cmd.split())  # collapse newlines + extra whitespace
+    max_len = max(_term_width() - 20, 40)
+    return flat if len(flat) <= max_len else flat[: max_len - 1] + "…"
+
+
+def _run_scripts(
+    scripts: list[str],
+    *,
+    cwd: Path,
+    env: dict,
+    error_cls: type,
+    phase: str = "step",
+) -> None:
+    """Run shell commands sequentially, printing a divider + `[i/N] phase: cmd`
+    label before each so the user can tell which step is running (and which
+    step's logs they're looking at) even when the chain is long. The leading
+    divider doubles as the closer for whatever section printed before us."""
+    div = _divider()
+    total = len(scripts)
+    for i, cmd in enumerate(scripts, start=1):
+        print(div)
+        print(f"[{i}/{total}] {phase}: {_compact_cmd(cmd)}")
+        print()
+        proc = subprocess.run(cmd, shell=True, cwd=cwd, env=env)
+        if proc.returncode != 0:
+            raise error_cls(f"command failed (exit {proc.returncode}): {cmd}")
+
+
+def _force_rollback_worktree(repo_root: Path, worktree_path: Path) -> None:
+    """Best-effort cleanup of a partially-created worktree directory after
+    `git worktree add` failed or setup was interrupted. Tries git's own
+    remove first, falls back to plain rmtree, then prunes stale metadata.
+    Never raises — the caller is already unwinding, this is just hygiene."""
+    if worktree_path.exists():
+        try:
+            remove_worktree(repo_root, worktree_path, force=True)
+        except GitError:
+            import shutil
+            shutil.rmtree(worktree_path, ignore_errors=True)
+    try:
+        _git(["worktree", "prune"], cwd=repo_root, check=False)
+    except Exception:
+        pass
+
+
+def cmd_new(
+    *,
+    name: str | None,
+    branch: str | None,
+    from_: str | None,
+    run_setup: bool,
+    start_dir: Path,
+) -> int:
+    cfg = load_config(start_dir)
+    pid = project_id(cfg.repo_root)
+
+    # 1. Resolve base ref (no name dependency yet)
+    if from_ is not None:
+        remote, _ = _split_default_base(cfg.default_base)
+        # Cheap upfront check so a typo'd branch fails with a friendly message
+        # instead of git's raw "fatal: couldn't find remote ref" stderr.
+        ls_remote = _git(
+            ["ls-remote", "--heads", remote, from_],
+            cwd=cfg.repo_root, check=False,
+        )
+        if ls_remote.returncode != 0 or not ls_remote.stdout.strip():
+            raise GitError(
+                f"branch {from_!r} not found on {remote}. "
+                f"List remote branches with: git ls-remote --heads {remote}"
+            )
+        git_fetch(cfg.repo_root, remote, from_)
+        conflict = branch_in_use(cfg.repo_root, from_)
+        if conflict is not None:
+            raise GitError(
+                f"branch {from_!r} is already checked out in {conflict}"
+            )
+        track_remote = True
+        base_ref = f"{remote}/{from_}"
+        # final_branch when --from: literal branch name (no template)
+        final_branch_when_from = branch if branch is not None else from_
+    else:
+        remote, base_branch = _split_default_base(cfg.default_base)
+        git_fetch(cfg.repo_root, remote, base_branch)
+        track_remote = False
+        base_ref = cfg.default_base
+        final_branch_when_from = None  # computed under lock when we know name
+
+    # 2. Atomic under flock: name + collision check + slot + state write.
+    # Doing all of these together prevents two concurrent `wt new` calls
+    # from picking the same auto-generated name or racing on the lowest
+    # free slot.
+    worktree_dir_parent = cfg.repo_root / cfg.worktree_path
+    with _locked(pid):
+        state = load_state(pid)
+        used_names = {s["name"] for s in state["slots"].values()}
+        if worktree_dir_parent.exists():
+            used_names |= {
+                p.name for p in worktree_dir_parent.glob("*") if p.is_dir()
+            }
+
+        if name is None:
+            name = generate_name(cfg.name_strategy, used=used_names)
+        else:
+            # Explicit name: refuse if the worktree dir already exists. Lets
+            # us surface a friendly "pick another name" message instead of
+            # git's raw "fatal: '...' already exists" stderr.
+            if (worktree_dir_parent / name).exists():
+                raise GitError(
+                    f"{worktree_dir_parent / name} already exists. "
+                    "Pick another name or remove the existing directory first."
+                )
+
+        worktree_path = worktree_dir_parent / name
+
+        if from_ is not None:
+            final_branch = final_branch_when_from
+        else:
+            final_branch = (
+                branch if branch is not None
+                else render_branch_template(cfg.branch_template, name=name)
+            )
+
+        used_slots = {int(k) for k in state["slots"]}
+        slot = None
+        for s in range(1, cfg.max_slots + 1):
+            if s not in used_slots:
+                slot = s
+                break
+        if slot is None:
+            raise SlotsFull(
+                f"no free slots (max_slots={cfg.max_slots}, used={sorted(used_slots)})"
+            )
+
+        entry = {
+            "name": name,
+            "branch": final_branch,
+            "path": str(worktree_path.relative_to(cfg.repo_root)),
+            "base": base_ref,
+            "tracks_remote": track_remote,
+            "created_at": datetime.datetime.now().astimezone().isoformat(),
+        }
+        state["slots"][str(slot)] = entry
+        save_state(pid, state)
+
+    # 3. git worktree add (slow; outside the lock)
+    try:
+        worktree_path.parent.mkdir(parents=True, exist_ok=True)
+        add_worktree(
+            cfg.repo_root, worktree_path, final_branch, base_ref,
+            track_remote=track_remote,
+        )
+    except GitError:
+        # `git worktree add` can leave a partial worktree on disk when a
+        # post-checkout hook fails (the working tree gets created, then the
+        # hook returns non-zero and git propagates that as its own exit
+        # code). Force-clean before re-raising.
+        _force_rollback_worktree(cfg.repo_root, worktree_path)
+        free_slot(pid, slot)
+        raise
+
+    # 5. Header before setup output
+    port_base = slot * cfg.port_offset_interval
+    branch_display = (
+        f"{final_branch} (tracks {base_ref})" if track_remote else final_branch
+    )
+    _print_section(
+        "Creating worktree",
+        name=name,
+        branch=branch_display,
+        base=base_ref,
+        path=str(worktree_path),
+        slot=str(slot),
+    )
+
+    # 6. Run setup (output flows naturally between header and footer)
+    if run_setup and cfg.setup:
+        env = _setup_env(
+            cfg=cfg, name=name, path=worktree_path,
+            branch=final_branch, slot=slot,
+        )
+        try:
+            _run_scripts(cfg.setup, cwd=worktree_path, env=env,
+                         error_cls=SetupFailed, phase="setup")
+        except BaseException as e:
+            # Catches SetupFailed, KeyboardInterrupt (Ctrl-C mid-setup),
+            # SystemExit, and any other unexpected exception. Always roll
+            # back so a half-baked worktree never lingers on disk.
+            if cfg.teardown and isinstance(e, SetupFailed):
+                # Only run teardown if setup proper failed (otherwise the
+                # infra may not have started — teardown could fail noisily).
+                try:
+                    _run_scripts(cfg.teardown, cwd=worktree_path, env=env,
+                                 error_cls=TeardownFailed, phase="teardown")
+                except TeardownFailed:
+                    pass
+            _force_rollback_worktree(cfg.repo_root, worktree_path)
+            free_slot(pid, slot)
+            raise
+
+    # 7. Footer with final status + cd sentinel
+    _print_section(
+        "Created worktree: " + name,
+        trailing_divider=True,
+        branch=branch_display,
+        base=base_ref,
+        path=str(worktree_path),
+        slot=f"{slot} (port offset +{port_base} to "
+             f"+{port_base + cfg.port_offset_interval - 1})",
+    )
+    print(f"__cd__:{worktree_path}")
+    return 0
+
+
+def cmd_cd(*, name: str | None, start_dir: Path) -> int:
+    cfg = load_config(start_dir)
+    pid = project_id(cfg.repo_root)
+    state = load_state(pid)
+
+    # No name OR explicit `main` (or its display alias `(main)`) routes to
+    # the main worktree. The main repo isn't tracked in wt's state file
+    # (state only holds linked worktrees), so it needs a special case.
+    if name is None or name in {"main", "(main)"}:
+        target = cfg.repo_root.resolve()
+        print(str(target))
+        print(f"__cd__:{target}")
+        return 0
+
+    for entry in state["slots"].values():
+        if entry["name"] == name:
+            target = (cfg.repo_root / entry["path"]).resolve()
+            print(str(target))
+            print(f"__cd__:{target}")
+            return 0
+
+    valid = ["main", *sorted(s["name"] for s in state["slots"].values())]
+    print(
+        f"wt: no worktree named {name!r}. Valid: {valid}",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _render_table(
+    headers: tuple[str, ...],
+    rows: list[tuple[str, ...]],
+    extra_sections: list[tuple[str, list[tuple[str, ...]]]] | None = None,
+) -> None:
+    """Render a Unicode box-drawing table with dynamic column widths.
+
+    Columns are sized to their content by default, but the table is also
+    capped to the terminal width: if it would overflow, the widest column
+    is shrunk (one char at a time, never below 8) and content in that
+    column is truncated with an ellipsis. This keeps `wt ls` readable on
+    narrow terminals without breaking the table layout.
+
+    `extra_sections` appends groups of rows after the primary `rows`,
+    separated by a spanning-title divider. Each entry is `(title, rows)`
+    — the rows must have the same column count as `headers`; pass empty
+    strings for columns that don't apply to that section.
+    """
+    extra_sections = extra_sections or []
+    all_rows = [headers, *rows]
+    for _title, section_rows in extra_sections:
+        all_rows.extend(section_rows)
+    widths = [max(_visual_len(str(r[i])) for r in all_rows) for i in range(len(headers))]
+
+    # Per row: "│ <cell> " repeated per column + final "│"  → 3 chars overhead
+    # per column (separator + 2 padding spaces) plus 1 for the closing border.
+    overhead = 3 * len(widths) + 1
+    term = _term_width()
+    min_col = 8
+    while sum(widths) + overhead > term:
+        widest = max(range(len(widths)), key=lambda i: widths[i])
+        if widths[widest] <= min_col:
+            break
+        widths[widest] -= 1
+
+    # Inner width of the table body (between the outer `│` borders).
+    # Used to centre spanning section titles.
+    inner_widths = [w + 2 for w in widths]
+    # `│ <cells separated by │> │` → outer 2 + cells + (n_cols - 1) separators.
+    total_outer = sum(inner_widths) + (len(inner_widths) - 1) + 2
+    title_text_width = total_outer - 4  # subtract `│ ` and ` │`
+
+    def truncate(text: str, w: int) -> str:
+        # Plain-text path: byte length matches visible length.
+        if _visual_len(text) <= w:
+            return text
+        # Cells with ANSI codes are short by construction (only the active-
+        # row marker is colored); we never need to truncate inside them.
+        if "\x1b[" in text:
+            return text
+        return text[: w - 1] + "…"
+
+    def hline(left: str, mid: str, right: str, *, fill: str = "─") -> str:
+        segs = [fill * iw for iw in inner_widths]
+        return left + mid.join(segs) + right
+
+    def data_row(cells: tuple[str, ...]) -> str:
+        # Double-line outer (║), single-line column separator (│).
+        padded = [
+            f" {_pad_visual(truncate(str(c), widths[i]), widths[i])} "
+            for i, c in enumerate(cells)
+        ]
+        return "║" + "│".join(padded) + "║"
+
+    def section_title(title: str) -> str:
+        text = truncate(title, title_text_width)
+        return f"║ {text.center(title_text_width)} ║"
+
+    # Top edge + header row + (single-line) header separator + primary rows
+    print(hline("╔", "╤", "╗", fill="═"))
+    print(data_row(headers))
+    print(hline("╟", "┼", "╢"))
+    for r in rows:
+        print(data_row(r))
+
+    # Each extra section: close-columns (double), spanning title, open-columns (double), rows.
+    for title, section_rows in extra_sections:
+        if not section_rows:
+            continue
+        print(hline("╠", "╧", "╣", fill="═"))   # close columns from above
+        print(section_title(title))
+        print(hline("╠", "╤", "╣", fill="═"))   # open columns going down
+        for r in section_rows:
+            print(data_row(r))
+
+    print(hline("╚", "╧", "╝", fill="═"))
+
+
+def cmd_ls(*, start_dir: Path) -> int:
+    cfg = load_config(start_dir)
+    pid = project_id(cfg.repo_root)
+    state = load_state(pid)
+    git_worktrees = list_worktrees(cfg.repo_root)
+
+    # Slot lookup by absolute resolved path
+    by_path: dict[str, tuple[int, dict]] = {}
+    for slot_str, entry in state["slots"].items():
+        abs_path = str((cfg.repo_root / entry["path"]).resolve())
+        by_path[abs_path] = (int(slot_str), entry)
+
+    repo_root_str = str(cfg.repo_root.resolve())
+    cwd_resolved = Path.cwd().resolve()
+
+    def _is_current(wpath_str: str) -> bool:
+        """True if cwd is inside (or equal to) the given worktree path."""
+        try:
+            cwd_resolved.relative_to(wpath_str)
+        except ValueError:
+            return False
+        return True
+
+    def _slot_cell(slot_str: str, is_current: bool) -> str:
+        return f"{slot_str} {_green('✓')}" if is_current else slot_str
+
+    managed: list[tuple[str, str, str, str, str]] = []
+    unmanaged: list[tuple[str, str]] = []
+
+    for w in git_worktrees:
+        wpath = str(Path(w["path"]).resolve())
+        # `live_branch` is git's authoritative current branch — picks up
+        # checkouts made inside the worktree after `wt new` set it up.
+        live_branch = w.get("branch") or "(detached)"
+        try:
+            rel_path = str(Path(wpath).relative_to(repo_root_str))
+        except ValueError:
+            rel_path = wpath
+        is_here = _is_current(wpath)
+
+        if wpath == repo_root_str:
+            managed.append((_slot_cell("0", is_here), "(main)", live_branch, ".", "base"))
+        elif wpath in by_path:
+            slot, entry = by_path[wpath]
+            offset = slot * cfg.port_offset_interval
+            managed.append(
+                (_slot_cell(str(slot), is_here), entry["name"], live_branch, rel_path, f"+{offset}")
+            )
+        else:
+            unmanaged.append((live_branch, rel_path))
+
+    # Sort by slot number (numeric). Strip ANSI before parsing so the
+    # current-row marker (e.g. "1 ✓" in green) doesn't break the int().
+    managed.sort(key=lambda r: int(_ANSI_RE.sub("", r[0]).split()[0]))
+
+    # Pad unmanaged rows to the 5-column shape with empty slot/name/ports
+    # so they slot into the same table under a spanning section header.
+    extra_sections: list[tuple[str, list[tuple[str, ...]]]] = []
+    if unmanaged:
+        unmanaged_full = [("", "", branch, path, "") for branch, path in unmanaged]
+        extra_sections.append(("Unmanaged worktrees", unmanaged_full))
+
+    _render_table(
+        ("SLOT", "NAME", "BRANCH", "PATH", "PORTS"),
+        managed,
+        extra_sections=extra_sections,
+    )
+
+    return 0
+
+
+def cmd_rm(
+    *, name: str, force: bool, keep_branch: bool, start_dir: Path
+) -> int:
+    cfg = load_config(start_dir)
+    pid = project_id(cfg.repo_root)
+    state = load_state(pid)
+
+    target_slot: int | None = None
+    target_entry: dict | None = None
+    for slot_str, entry in state["slots"].items():
+        if entry["name"] == name:
+            target_slot = int(slot_str)
+            target_entry = entry
+            break
+
+    if target_slot is None:
+        valid = sorted(s["name"] for s in state["slots"].values())
+        print(
+            f"wt: no worktree named {name!r}. Valid: {valid}",
+            file=sys.stderr,
+        )
+        return 1
+
+    assert target_entry is not None
+    worktree_path = (cfg.repo_root / target_entry["path"]).resolve()
+    # The branch checked out in the worktree NOW — not whatever `wt new`
+    # originally wrote into state. Users frequently `git checkout` over the
+    # initial branch (e.g. to review a remote branch), which would otherwise
+    # leave the unmerged-check and branch-delete steps pointing at a ref
+    # that no longer exists (causing `git rev-list origin/main..<stale>` to
+    # error with "unknown revision"). Fall back to the state value only if
+    # git reports detached HEAD.
+    live_branch: str | None = None
+    for w in list_worktrees(cfg.repo_root):
+        if str(Path(w["path"]).resolve()) == str(worktree_path):
+            live_branch = w.get("branch")
+            break
+    branch = live_branch or target_entry["branch"]
+
+    # Refuse if cwd is inside the worktree we're about to remove — otherwise
+    # the shell ends up in a phantom directory after `git worktree remove`.
+    try:
+        Path.cwd().resolve().relative_to(worktree_path)
+        inside_target = True
+    except ValueError:
+        inside_target = False
+    if inside_target:
+        print(
+            f"wt: you're currently inside {worktree_path}.\n"
+            f"    cd out (e.g. `cd {cfg.repo_root}`) before removing it.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Header before teardown output
+    _print_section(
+        "Removing worktree",
+        name=name,
+        branch=branch,
+        path=str(worktree_path),
+        slot=str(target_slot),
+    )
+
+    # 1. Run teardown
+    if cfg.teardown and worktree_path.exists():
+        env = _setup_env(
+            cfg=cfg, name=name, path=worktree_path,
+            branch=branch, slot=target_slot,
+        )
+        try:
+            _run_scripts(cfg.teardown, cwd=worktree_path, env=env,
+                         error_cls=TeardownFailed, phase="teardown")
+        except TeardownFailed as e:
+            if force:
+                print(
+                    f"wt: teardown failed: {e}\nContinuing because --force was given.",
+                    file=sys.stderr,
+                )
+            elif not _prompt_continue_or_stop(f"teardown failed: {e}"):
+                print("wt: aborted.", file=sys.stderr)
+                return 1
+
+    # 2. Branch safety check — prompt instead of refusing outright, so the
+    # user can review the unmerged commits and decide.
+    if not keep_branch and not force:
+        base_remote, base_branch = _split_default_base(cfg.default_base)
+        base_ref = f"{base_remote}/{base_branch}"
+        if has_unmerged_commits(cfg.repo_root, branch, base_ref):
+            upstream = _branch_has_upstream(cfg.repo_root, branch)
+            summary = _unmerged_commits_summary(
+                cfg.repo_root, branch, base_ref, has_upstream=upstream
+            )
+            if not _prompt_continue_or_stop(summary):
+                print("wt: aborted.", file=sys.stderr)
+                return 1
+            # User chose to continue — proceed with force semantics for the
+            # rest so the worktree + branch actually go away.
+            force = True
+
+    # 3. git worktree remove (prompt on dirty when --force wasn't given)
+    if worktree_path.exists():
+        try:
+            remove_worktree(cfg.repo_root, worktree_path, force=force)
+        except GitError as e:
+            if force:
+                # Already tried --force; something deeper is wrong.
+                print(f"wt: force-remove failed: {e}", file=sys.stderr)
+                return 1
+            reason = (
+                f"cannot remove worktree {worktree_path}: "
+                "it has uncommitted or untracked changes."
+            )
+            if not _prompt_continue_or_stop(reason):
+                print("wt: aborted.", file=sys.stderr)
+                return 1
+            try:
+                remove_worktree(cfg.repo_root, worktree_path, force=True)
+            except GitError as e2:
+                print(f"wt: force-remove failed: {e2}", file=sys.stderr)
+                return 1
+            force = True  # honor the user's "continue" for the branch step too
+
+    # 4. Delete branch
+    if not keep_branch:
+        try:
+            delete_branch(cfg.repo_root, branch, force=force)
+        except GitError as e:
+            print(f"wt: warning: could not delete branch {branch!r}: {e}",
+                  file=sys.stderr)
+
+    # 5. Free slot
+    free_slot(pid, target_slot)
+    _print_section(
+        "Removed worktree: " + name,
+        trailing_divider=True,
+        branch=branch,
+        path=str(worktree_path),
+        slot=f"{target_slot} (freed)",
+    )
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    # When wt is invoked through the zsh wrapper (`out=$(command wt ...)`),
+    # stdout is a pipe and Python defaults to block-buffering. That makes
+    # our `print(...)` calls land AFTER any subprocess output (e.g. setup
+    # scripts), because subprocesses write directly to fd 1 while Python's
+    # buffer hasn't flushed yet. Line-buffer mode forces a flush on every
+    # newline so headers stay above the output they introduce.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        pass
+
+    parser = argparse.ArgumentParser(
+        prog="wt",
+        description=(
+            "Universal git worktree CLI — create, list, enter, and remove\n"
+            "worktrees with per-project setup/teardown scripts."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  wt new                            auto-named city, branch off origin/main\n"
+            "  wt new my-fix                     explicit worktree name\n"
+            "  wt new -b you/feat/X-123        explicit branch (auto dir name)\n"
+            "  wt new my-fix -b you/feat/X-123 explicit name + branch\n"
+            "  wt new --from feature-x           check out an existing remote branch (MR review)\n"
+            "  wt new --skip-setup               create the worktree but skip the project's setup script\n"
+            "  wt ls                             list worktrees with slot/branch/path/ports\n"
+            "  wt cd <name>                      jump into an existing worktree\n"
+            "  wt rm <name>                      teardown + remove worktree + free slot + delete branch\n"
+            "  wt rm <name> --force              bypass dirty/unmerged checks\n"
+            "  wt rm <name> --keep-branch        keep the branch when removing the worktree\n"
+            "\n"
+            "Run `wt <command> -h` for command-specific options."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(
+        dest="cmd", required=True, metavar="<command>",
+        title="commands",
+    )
+
+    p_new = sub.add_parser(
+        "new",
+        help="create a new worktree (branch off origin/main or --from <remote-branch>)",
+        description="Create a new worktree under .worktrees/<name>, run the project's setup script, and cd into it.",
+    )
+    p_new.add_argument(
+        "name", nargs="?",
+        help="worktree directory name (auto-generated city name if omitted)",
+    )
+    p_new.add_argument(
+        "-b", "--branch",
+        help="branch name to create (defaults to <branch_template> from .wt/config.toml, e.g. you/<name>)",
+    )
+    p_new.add_argument(
+        "--from", dest="from_", metavar="REMOTE_BRANCH",
+        help="check out an existing remote branch (track origin/<REMOTE_BRANCH>) instead of branching off origin/main",
+    )
+    p_new.add_argument(
+        "--no-setup", "--skip-setup", dest="no_setup", action="store_true",
+        help="skip the project's setup script (useful when you want the worktree only — no infra, no installs)",
+    )
+
+    sub.add_parser(
+        "ls", aliases=["list"],
+        help="list worktrees with slot/branch/path/ports (alias: list)",
+        description="Show all worktrees managed by wt plus any unmanaged worktrees git knows about.",
+    )
+
+    p_cd = sub.add_parser(
+        "cd",
+        help="cd into an existing worktree (defaults to main)",
+        description="Print the worktree path and emit a `__cd__:` sentinel the shell wrapper consumes to actually cd. With no name, cds to the main worktree.",
+    )
+    p_cd.add_argument(
+        "name", nargs="?", default=None,
+        help="worktree name (see `wt ls`); defaults to main",
+    )
+
+    p_rm = sub.add_parser(
+        "rm", aliases=["remove"],
+        help="teardown + remove worktree + free slot + delete branch (alias: remove)",
+        description="Tear down the worktree's infra (via the project's teardown script), remove the working tree, delete the local branch, and free the slot.",
+    )
+    p_rm.add_argument("name", help="worktree name to remove")
+    p_rm.add_argument(
+        "--force", action="store_true",
+        help="bypass dirty-worktree and unmerged-commits safety checks",
+    )
+    p_rm.add_argument(
+        "--keep-branch", action="store_true",
+        help="remove the worktree directory but keep the local branch intact",
+    )
+
+    sub.add_parser(
+        "help",
+        help="show this help message",
+        description="Print the top-level usage and exit.",
+    )
+
+    args = parser.parse_args(argv)
+    cwd = Path.cwd()
+
+    try:
+        if args.cmd == "new":
+            return cmd_new(
+                name=args.name, branch=args.branch, from_=args.from_,
+                run_setup=not args.no_setup, start_dir=cwd,
+            )
+        if args.cmd in ("ls", "list"):
+            return cmd_ls(start_dir=cwd)
+        if args.cmd == "cd":
+            return cmd_cd(name=args.name, start_dir=cwd)
+        if args.cmd in ("rm", "remove"):
+            return cmd_rm(
+                name=args.name, force=args.force,
+                keep_branch=args.keep_branch, start_dir=cwd,
+            )
+        if args.cmd == "help":
+            parser.print_help()
+            return 0
+        print(f"stub: {args.cmd}", file=sys.stderr)
+        return 0
+    except (ConfigNotFound, ConfigError, GitError, SlotsFull,
+            SetupFailed, TeardownFailed) as e:
+        print(f"wt: error: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

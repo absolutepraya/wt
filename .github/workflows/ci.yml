@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Configure git
+        # Pytest fixtures create real git repos; git needs an identity.
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name  "CI"
+          git config --global init.defaultBranch main
+
+      - name: Run tests
+        run: pytest -q tests/
+
+      - name: Syntax-check the script
+        run: python -c "import ast; ast.parse(open('bin/wt').read())"
+
+      - name: Help renders
+        run: python bin/wt --help
