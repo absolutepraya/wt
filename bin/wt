@@ -658,10 +658,14 @@ def cmd_new(
         base_ref = cfg.default_base
         final_branch_when_from = None  # computed under lock when we know name
 
-    # 2. Atomic under flock: name + collision check + slot + state write.
-    # Doing all of these together prevents two concurrent `wt new` calls
-    # from picking the same auto-generated name or racing on the lowest
-    # free slot.
+    # 2. Atomic under flock: name + collision check + slot + state write +
+    # `git worktree add`. The git call has to be inside the lock because
+    # `git worktree add` itself isn't concurrency-safe — it writes to
+    # `.git/worktrees/<name>/` and `.git/index`, so two parallel adds can
+    # race. The lock also keeps two `wt new` invocations from picking the
+    # same auto-generated name or the same lowest-free slot. Cost: truly
+    # parallel `wt new` calls serialize through the git step. Acceptable —
+    # `wt new` isn't a hot path.
     worktree_dir_parent = cfg.repo_root / cfg.worktree_path
     with _locked(pid):
         state = load_state(pid)
@@ -715,21 +719,26 @@ def cmd_new(
         state["slots"][str(slot)] = entry
         save_state(pid, state)
 
-    # 3. git worktree add (slow; outside the lock)
-    try:
-        worktree_path.parent.mkdir(parents=True, exist_ok=True)
-        add_worktree(
-            cfg.repo_root, worktree_path, final_branch, base_ref,
-            track_remote=track_remote,
-        )
-    except GitError:
-        # `git worktree add` can leave a partial worktree on disk when a
-        # post-checkout hook fails (the working tree gets created, then the
-        # hook returns non-zero and git propagates that as its own exit
-        # code). Force-clean before re-raising.
-        _force_rollback_worktree(cfg.repo_root, worktree_path)
-        free_slot(pid, slot)
-        raise
+        # 3. git worktree add — also under the lock (see comment above).
+        try:
+            worktree_path.parent.mkdir(parents=True, exist_ok=True)
+            add_worktree(
+                cfg.repo_root, worktree_path, final_branch, base_ref,
+                track_remote=track_remote,
+            )
+        except GitError:
+            # `git worktree add` can leave a partial worktree on disk when
+            # a post-checkout hook fails (the working tree gets created,
+            # then the hook returns non-zero and git propagates that as
+            # its own exit code). Force-clean before re-raising. Inline
+            # the slot-free here — calling `free_slot()` would re-acquire
+            # this same flock and deadlock on platforms where flock isn't
+            # re-entrant.
+            _force_rollback_worktree(cfg.repo_root, worktree_path)
+            state = load_state(pid)
+            state["slots"].pop(str(slot), None)
+            save_state(pid, state)
+            raise
 
     # 5. Header before setup output
     port_base = slot * cfg.port_offset_interval
