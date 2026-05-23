@@ -3,7 +3,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-WT = os.path.expanduser("~/.local/bin/wt")
+# Point at the in-repo script so the e2e test exercises the same bytes
+# we ship. Mirrors the resolution logic in conftest.py.
+WT = str(Path(__file__).resolve().parent.parent / "bin" / "wt")
 
 
 def _run_wt(args, cwd, env):
