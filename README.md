@@ -259,6 +259,22 @@ Example: bind your Postgres to `$((5432 + WT_PORT_BASE))` in your start-infra sc
 
 `wt` is a thin layer over `git worktree`. It keeps a per-project state file under `~/.wt/<project-id>/state.json` mapping slots to worktrees, and uses `flock` for concurrency. `wt new` does `git fetch` → reserve a slot → `git worktree add` → run setup. `wt rm` runs teardown → safety checks → `git worktree remove` → `git branch -D` → free the slot. `wt cd` and `wt new` print a `__cd__:<path>` sentinel line that the shell wrapper consumes to actually `cd` your shell.
 
+## For AI coding agents
+
+If you use Claude Code, Codex, Cursor, OpenCode, or a similar agent, this repo ships an Agent Skill at `skills/wt/SKILL.md` that teaches the agent how and when to use `wt` instead of raw `git worktree add`.
+
+To install it:
+
+```bash
+# Pick one — wherever your agent reads skills from
+mkdir -p ~/.claude/skills && ln -s "$PWD/skills/wt" ~/.claude/skills/wt              # Claude Code
+mkdir -p ~/.config/opencode/skills && ln -s "$PWD/skills/wt" ~/.config/opencode/skills/wt   # OpenCode
+mkdir -p ~/.codex/skills && ln -s "$PWD/skills/wt" ~/.codex/skills/wt                # Codex
+mkdir -p ~/.cursor/skills && ln -s "$PWD/skills/wt" ~/.cursor/skills/wt              # Cursor
+```
+
+Or just copy the directory into your agent's skill folder. After that, ask your agent "create a worktree for X" — it'll invoke the `wt` skill and use the CLI correctly (config check, safety prompts, env vars passed to setup scripts, etc.).
+
 ## Development
 
 ```bash
