@@ -29,10 +29,8 @@ def test_new_default_creates_worktree_and_branch(configured_repo, wt_module, cap
                            run_setup=True, start_dir=configured_repo)
     assert rc == 0
     out = capsys.readouterr().out
-    # should emit __cd__:<absolute path> as the last meaningful line
-    cd_lines = [l for l in out.splitlines() if l.startswith("__cd__:")]
-    assert len(cd_lines) == 1
-    new_path = Path(cd_lines[0].removeprefix("__cd__:"))
+    assert "__cd__:" not in out
+    new_path = next((configured_repo / ".worktrees").iterdir())
     assert new_path.exists()
     assert new_path.parent.name == ".worktrees"
     # branch named testuser/<some-city>
@@ -41,6 +39,15 @@ def test_new_default_creates_worktree_and_branch(configured_repo, wt_module, cap
         cwd=new_path, text=True,
     ).strip()
     assert branch.startswith("testuser/")
+
+
+def test_new_cd_emits_sentinel_when_requested(configured_repo, wt_module, capsys):
+    rc = wt_module.cmd_new(name="adelaide", branch=None, from_=None,
+                           run_setup=True, cd_after_create=True,
+                           start_dir=configured_repo)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert f"__cd__:{configured_repo / '.worktrees' / 'adelaide'}" in out
 
 
 def test_new_with_explicit_name(configured_repo, wt_module, capsys):

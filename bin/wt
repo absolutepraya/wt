@@ -622,6 +622,7 @@ def cmd_new(
     branch: str | None,
     from_: str | None,
     run_setup: bool,
+    cd_after_create: bool = False,
     start_dir: Path,
 ) -> int:
     cfg = load_config(start_dir)
@@ -779,7 +780,9 @@ def cmd_new(
             free_slot(pid, slot)
             raise
 
-    # 7. Footer with final status + cd sentinel
+    # 7. Footer. Emit the cd sentinel only when explicitly requested: a
+    # subprocess cannot change an agent's or another shell's cwd, and agents
+    # should ordinarily continue operating from the caller-selected directory.
     _print_section(
         "Created worktree: " + name,
         trailing_divider=True,
@@ -789,7 +792,8 @@ def cmd_new(
         slot=f"{slot} (port offset +{port_base} to "
              f"+{port_base + cfg.port_offset_interval - 1})",
     )
-    print(f"__cd__:{worktree_path}")
+    if cd_after_create:
+        print(f"__cd__:{worktree_path}")
     return 0
 
 
@@ -1144,6 +1148,7 @@ def main(argv: list[str] | None = None) -> int:
         epilog=(
             "Examples:\n"
             "  wt new                            auto-named city, branch off origin/main\n"
+            "  wt new --cd                       create, then enter it in an interactive shell\n"
             "  wt new my-fix                     explicit worktree name\n"
             "  wt new -b you/feat/X-123        explicit branch (auto dir name)\n"
             "  wt new my-fix -b you/feat/X-123 explicit name + branch\n"
@@ -1167,7 +1172,7 @@ def main(argv: list[str] | None = None) -> int:
     p_new = sub.add_parser(
         "new",
         help="create a new worktree (branch off origin/main or --from <remote-branch>)",
-        description="Create a new worktree under .worktrees/<name>, run the project's setup script, and cd into it.",
+        description="Create a new worktree under .worktrees/<name> and run the project's setup script. Use --cd to enter it in an interactive shell.",
     )
     p_new.add_argument(
         "name", nargs="?",
@@ -1184,6 +1189,10 @@ def main(argv: list[str] | None = None) -> int:
     p_new.add_argument(
         "--no-setup", "--skip-setup", dest="no_setup", action="store_true",
         help="skip the project's setup script (useful when you want the worktree only — no infra, no installs)",
+    )
+    p_new.add_argument(
+        "--cd", dest="cd_after_create", action="store_true",
+        help="after creation, enter the worktree in an interactive shell (ignored by subprocess callers such as coding agents)",
     )
 
     sub.add_parser(
@@ -1230,7 +1239,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "new":
             return cmd_new(
                 name=args.name, branch=args.branch, from_=args.from_,
-                run_setup=not args.no_setup, start_dir=cwd,
+                run_setup=not args.no_setup, cd_after_create=args.cd_after_create,
+                start_dir=cwd,
             )
         if args.cmd in ("ls", "list"):
             return cmd_ls(start_dir=cwd)

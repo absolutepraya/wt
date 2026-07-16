@@ -32,6 +32,11 @@ def test_full_lifecycle_via_subprocess(tmp_repo, write_config, tmp_path):
     r = _run_wt(["new", "adelaide"], cwd=tmp_repo, env=env)
     assert r.returncode == 0, r.stderr
     assert "Created worktree: adelaide" in r.stdout
+    assert "__cd__:" not in r.stdout
+
+    # Opt in to a cd sentinel for an interactive shell wrapper.
+    r = _run_wt(["new", "perth", "--cd"], cwd=tmp_repo, env=env)
+    assert r.returncode == 0, r.stderr
     assert "__cd__:" in r.stdout
 
     # 2. List

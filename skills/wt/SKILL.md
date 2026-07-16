@@ -5,7 +5,7 @@ description: Use when the user wants to create, list, enter, or remove a git wor
 
 # wt — Universal git worktree CLI
 
-`wt` is a single-file Python CLI for managing git worktrees with per-project setup/teardown, numbered slots with port offsets, and auto-cd. Canonical install at `~/.local/bin/wt`. Source: https://github.com/absolutepraya/wt.
+`wt` is a single-file Python CLI for managing git worktrees with per-project setup/teardown and numbered slots with port offsets. Canonical install at `~/.local/bin/wt`. Source: https://github.com/absolutepraya/wt.
 
 ## When to use this skill
 
@@ -31,7 +31,8 @@ Do not silently create the config or silently fall back.
 
 ```bash
 # Create
-wt new                                  # auto-name (city), branch off origin/main, run setup, auto-cd
+wt new                                  # auto-name (city), branch off origin/main, run setup
+wt new --cd                             # create, then enter it in an interactive shell
 wt new my-fix                           # explicit name
 wt new -b user/feat/X-123               # explicit branch (auto dir name)
 wt new my-fix -b user/feat/X-123        # explicit name + branch
@@ -50,6 +51,8 @@ wt rm <name> --keep-branch              # remove worktree but preserve the branc
 ```
 
 Get full per-command help: `wt <command> -h`.
+
+For coding agents, use `wt new` without `--cd`. A command subprocess cannot change the agent host's working directory, so the worktree path in the successful command output is the path to use for subsequent work.
 
 ## Per-project `.wt/config.toml` template
 

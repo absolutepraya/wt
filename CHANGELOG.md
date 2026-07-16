@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `wt new` now stays in the current directory by default. Pass `--cd` to opt into interactive-shell navigation after creating the worktree.
+- Documented Vercel Skills CLI installation: `npx skills add absolutepraya/wt --skill wt`.
+
 ## v0.1.0 — initial release
 
 First public release of `wt`. Single-file Python CLI, stdlib only.

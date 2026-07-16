@@ -72,7 +72,8 @@ wt new
 ## Commands
 
 ```
-wt new                          # auto-named worktree off origin/main, runs setup, auto-cd
+wt new                          # auto-named worktree off origin/main, runs setup, stays put
+wt new --cd                     # create, then enter it in an interactive shell
 wt new my-fix                   # explicit worktree name
 wt new -b you/feat/X-123        # explicit branch (auto dir name)
 wt new my-fix -b you/feat/X-123 # explicit name + branch
@@ -151,7 +152,7 @@ Created worktree: rotterdam
 ══════════════════════════════════════════════════════════════════
 ```
 
-After this, your shell is `cd`'d into `.worktrees/rotterdam` automatically.
+By default your shell stays where it is. Add `--cd` when you are working interactively and want the shell wrapper to enter `.worktrees/rotterdam` after creation.
 
 ### `wt rm`
 
@@ -257,11 +258,25 @@ Example: bind your Postgres to `$((5432 + WT_PORT_BASE))` in your start-infra sc
 
 ## How it works (one paragraph)
 
-`wt` is a thin layer over `git worktree`. It keeps a per-project state file under `~/.wt/<project-id>/state.json` mapping slots to worktrees, and uses `flock` for concurrency. `wt new` does `git fetch` → reserve a slot → `git worktree add` → run setup. `wt rm` runs teardown → safety checks → `git worktree remove` → `git branch -D` → free the slot. `wt cd` and `wt new` print a `__cd__:<path>` sentinel line that the shell wrapper consumes to actually `cd` your shell.
+`wt` is a thin layer over `git worktree`. It keeps a per-project state file under `~/.wt/<project-id>/state.json` mapping slots to worktrees, and uses `flock` for concurrency. `wt new` does `git fetch` → reserve a slot → `git worktree add` → run setup. `wt rm` runs teardown → safety checks → `git worktree remove` → `git branch -D` → free the slot. `wt cd` and `wt new --cd` print a `__cd__:<path>` sentinel line that the shell wrapper consumes to actually `cd` your shell.
 
 ## For AI coding agents
 
 If you use Claude Code, Codex, Cursor, OpenCode, or a similar agent, this repo ships an Agent Skill at `skills/wt/SKILL.md` that teaches the agent how and when to use `wt` instead of raw `git worktree add`.
+
+Install it with the [Vercel Skills CLI](https://github.com/vercel-labs/skills):
+
+```bash
+# Install the wt skill for detected agents in the current project.
+npx skills add absolutepraya/wt --skill wt
+
+# Or install it globally for one agent.
+npx skills add absolutepraya/wt --skill wt --global --agent codex
+```
+
+The CLI discovers `skills/wt/SKILL.md` directly and uses symlinks by default, so `npx skills update` can refresh it later. Coding agents should use `wt new` without `--cd`: a subprocess cannot change the agent host's working directory.
+
+### Manual installation
 
 To install it:
 
@@ -273,7 +288,7 @@ mkdir -p ~/.codex/skills && ln -s "$PWD/skills/wt" ~/.codex/skills/wt           
 mkdir -p ~/.cursor/skills && ln -s "$PWD/skills/wt" ~/.cursor/skills/wt              # Cursor
 ```
 
-Or just copy the directory into your agent's skill folder. After that, ask your agent "create a worktree for X" — it'll invoke the `wt` skill and use the CLI correctly (config check, safety prompts, env vars passed to setup scripts, etc.).
+Or copy the directory into your agent's skill folder. After that, ask your agent "create a worktree for X" — it'll invoke the `wt` skill and use the CLI correctly (config check, safety prompts, env vars passed to setup scripts, etc.).
 
 ## Development
 
