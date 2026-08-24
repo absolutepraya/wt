@@ -33,6 +33,19 @@ cd ~/Documents/Projects/wt
 ./install.sh
 ```
 
+### Project-local npm install
+
+For a Node or JavaScript project that wants to pin `wt` in its dependency lockfile, install the npm package as a development dependency:
+
+```bash
+npm install --save-dev @praya/wt
+npx --no-install wt --help
+```
+
+The consuming project's `package-lock.json` pins the npm adapter version. The adapter forwards to the same Python CLI shipped by the standalone installer, so Python 3.11 or newer and Git are still required. This install mode provides the `wt` command to npm scripts and `npx --no-install`; it does not modify shell startup files. Use the standalone installer when you want the bash, zsh, or fish shell wrapper for interactive `cd` behavior.
+
+The npm package will be published separately from the source repository. Until then, use the standalone installer or install from source.
+
 ### Fish shell
 
 Add to `~/.config/fish/config.fish`:
@@ -297,6 +310,7 @@ git clone https://github.com/absolutepraya/wt
 cd wt
 pip install pytest pytest-mock
 pytest tests/
+bash scripts/check-npm-package.sh
 ```
 
 Tests use real git repos (no mocks for `git`) and run on Python 3.11, 3.12, and 3.13 across macOS and Linux in CI.
