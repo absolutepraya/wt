@@ -4,6 +4,9 @@
 
 - `wt new` now stays in the current directory by default. Pass `--cd` to opt into interactive-shell navigation after creating the worktree.
 - Documented Vercel Skills CLI installation: `npx skills add absolutepraya/wt --skill wt`.
+- Added npm package metadata and a cross-platform Node launcher for project-local installs as `@praya/wt`.
+- Added package checks that verify the npm binary forwards to the existing Python CLI.
+- Added a separate CI npm matrix that validates the packed artifact in a fresh consumer project.
 
 ## v0.1.0 — initial release
 
