@@ -33,7 +33,7 @@ cd ~/Documents/Projects/wt
 ./install.sh
 ```
 
-### Project-local npm install
+### Project-local npm install (after publication)
 
 For a Node or JavaScript project that wants to pin `wt` in its dependency lockfile, install the npm package as a development dependency:
 
@@ -304,6 +304,8 @@ mkdir -p ~/.cursor/skills && ln -s "$PWD/skills/wt" ~/.cursor/skills/wt         
 Or copy the directory into your agent's skill folder. After that, ask your agent "create a worktree for X" — it'll invoke the `wt` skill and use the CLI correctly (config check, safety prompts, env vars passed to setup scripts, etc.).
 
 ## Development
+
+The npm package smoke test requires Node.js 18 or newer and npm, in addition to Python 3.11 or newer.
 
 ```bash
 git clone https://github.com/absolutepraya/wt
