@@ -38,7 +38,7 @@ cd ~/Documents/Projects/wt
 For a Node or JavaScript project that wants to pin `wt` in its dependency lockfile, install the npm package as a development dependency:
 
 ```bash
-npm install --save-dev @praya/wt
+npm install --save-dev @absolutepraya/wt
 npx --no-install wt --help
 ```
 
