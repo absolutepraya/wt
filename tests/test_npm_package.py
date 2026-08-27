@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def test_npm_manifest_exposes_the_wt_binary():
     manifest = json.loads((ROOT / "package.json").read_text())
 
-    assert manifest["name"] == "@praya/wt"
+    assert manifest["name"] == "@absolutepraya/wt"
     assert manifest["bin"] == {"wt": "npm/wt.cjs"}
     assert "bin/wt" in manifest["files"]
     assert "npm/wt.cjs" in manifest["files"]
