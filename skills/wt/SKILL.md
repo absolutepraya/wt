@@ -106,6 +106,25 @@ Use these in scripts instead of hardcoding paths or ports — every worktree get
 
 `wt new` is safe to invoke in parallel (the script holds an `flock` across slot/name allocation AND the `git worktree add` call). Two parallel `wt new` calls serialize through the git step but both succeed cleanly.
 
+## Contributing to this repository
+
+When changing this repository, keep these boundaries intact:
+
+- `bin/wt` is the core CLI source of truth. `npm/wt.cjs` is only a launcher;
+  do not reimplement worktree behavior in the Node adapter.
+- Use a named `wt` worktree based on `origin/main` and keep the main worktree
+  unchanged during implementation.
+- Validate Python changes with `python -m pytest -q tests/`. Validate the npm
+  artifact with `npm run check`, `npm run pack:check`, and
+  `bash scripts/check-npm-package.sh`.
+- Keep `README.md`, `CHANGELOG.md`, and `docs/adr/` aligned with user-facing
+  and release changes.
+- The repository intentionally ignores local `CONTEXT.md`. Use tracked
+  repository guidance instead, especially `AGENTS.md`, the README, and the
+  architecture decision record.
+- Release `@absolutepraya/wt` from merged `main` after validating the packed
+  artifact and a clean consumer install.
+
 ## When `wt` is the wrong tool
 
 - Repo has no `.wt/config.toml` and the user hasn't asked for one → use raw `git worktree add`, after telling them.
