@@ -1,14 +1,21 @@
 # wt
 
-A universal git worktree CLI for fast, parallel feature work.
+[![CI](https://github.com/absolutepraya/wt/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/absolutepraya/wt/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/absolutepraya/wt)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Node.js 18+](https://img.shields.io/badge/node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 
-`wt` lets you spin up multiple isolated checkouts of the same repo with one command. Each worktree gets a unique name, a numbered slot, an optional port offset for local services, and runs your project's setup script automatically. Removing a worktree runs teardown, cleans up the branch, and frees the slot.
+An agent-first Git worktree manager for running multiple AI coding agents in parallel on the same project.
+
+`wt` gives each agent a named, isolated feature worktree while keeping branch creation, project setup and teardown, slot allocation, and port offsets in one consistent workflow. It is agent-agnostic, so switching between Claude Code, Codex, Cursor, OpenCode, or another coding agent does not change how the project manages worktrees.
+
+Although it is built for agent-first workflows, `wt` also works for human-led parallel feature work.
 
 Single-file Python script. Stdlib only. No runtime dependencies beyond `git` and Python 3.11+.
 
 ## Why
 
-If you're juggling several feature branches, you've probably hit the friction of `git stash`, `git checkout`, re-running migrations, restarting your dev server, dealing with port conflicts between branches. Worktrees solve the "one checkout per branch" half of this. `wt` solves the other half: per-branch infra setup/teardown, port allocation, and a discoverable interface.
+If you're juggling several feature branches or AI coding agents, you've probably hit the friction of `git stash`, `git checkout`, re-running migrations, restarting your dev server, and dealing with port conflicts between branches. Worktrees solve the "one checkout per branch" half of this. `wt` solves the other half: per-branch infrastructure setup and teardown, port allocation, and a discoverable interface.
 
 ## Install
 
