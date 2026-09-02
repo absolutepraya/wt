@@ -14,4 +14,9 @@ We will publish `@absolutepraya/wt` as a public, project-local npm package that 
 
 ## Consequences
 
-The npm adapter requires Node 18 or newer, Python 3.11 or newer, and Git. Release is manual: merge the feature branch, create the version tag, publish publicly under the account-owned `@absolutepraya` scope, and verify a clean consumer install.
+The npm adapter requires Node 18 or newer, Python 3.11 or newer, and Git. The
+initial distribution release was manual: merge the feature branch, create the
+version tag, publish publicly under the account-owned `@absolutepraya` scope,
+and verify a clean consumer install. ADR 0002 supersedes that release
+mechanism with CI automation while retaining the package boundary decisions
+made here.

@@ -1,6 +1,8 @@
 # wt
 
 [![CI](https://github.com/absolutepraya/wt/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/absolutepraya/wt/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/%40absolutepraya%2Fwt?logo=npm)](https://www.npmjs.com/package/@absolutepraya/wt)
+[![GitHub Release](https://img.shields.io/github/v/release/absolutepraya/wt?display_name=tag&sort=semver)](https://github.com/absolutepraya/wt/releases)
 [![License](https://img.shields.io/github/license/absolutepraya/wt)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Node.js 18+](https://img.shields.io/badge/node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -29,6 +31,7 @@ This installs:
 
 - `~/.local/bin/wt` — the script
 - `~/.config/wt/wt.sh` — the shell wrapper (sourced from your `~/.zshrc` / `~/.bashrc`)
+- `~/.config/wt/wt.fish` — the Fish wrapper (source it from your Fish config)
 
 Open a new shell or `source ~/.zshrc` to pick up the wrapper.
 
@@ -40,7 +43,7 @@ cd ~/Documents/Projects/wt
 ./install.sh
 ```
 
-### Project-local npm install (after publication)
+### Project-local npm install
 
 For a Node or JavaScript project that wants to pin `wt` in its dependency lockfile, install the npm package as a development dependency:
 
@@ -51,7 +54,24 @@ npx --no-install wt --help
 
 The consuming project's `package-lock.json` pins the npm adapter version. The adapter forwards to the same Python CLI shipped by the standalone installer, so Python 3.11 or newer and Git are still required. This install mode provides the `wt` command to npm scripts and `npx --no-install`; it does not modify shell startup files. Use the standalone installer when you want the bash, zsh, or fish shell wrapper for interactive `cd` behavior.
 
-The npm package will be published separately from the source repository. Until then, use the standalone installer or install from source.
+Each versioned merge to `main` can publish the package and create a matching GitHub Release after the repository's release setup is complete. See [RELEASING.md](docs/RELEASING.md) for the one-time setup and release contract.
+
+### Update a standalone installation
+
+The standalone installation updates from the latest stable GitHub Release:
+
+```bash
+wt update --check
+wt update
+```
+
+The update verifies the release checksums and downloaded payloads before replacing the CLI and installed shell wrappers. This includes the Fish wrapper when it is present. npm-managed installations belong to the consumer project's dependency graph, so update those with:
+
+```bash
+npm update --save-dev @absolutepraya/wt
+```
+
+The source checkout itself is never modified by `wt update`.
 
 ### Fish shell
 
@@ -61,11 +81,8 @@ Add to `~/.config/fish/config.fish`:
 source ~/.config/wt/wt.fish
 ```
 
-Then download the fish wrapper:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/absolutepraya/wt/main/shell/wt.fish -o ~/.config/wt/wt.fish
-```
+The standalone installer places the wrapper at `~/.config/wt/wt.fish` and
+`wt update` keeps it current with the CLI.
 
 ### Requirements
 
@@ -92,6 +109,7 @@ wt new
 ## Commands
 
 ```
+wt --version                    # print the installed wt version
 wt new                          # auto-named worktree off origin/main, runs setup, stays put
 wt new --cd                     # create, then enter it in an interactive shell
 wt new my-fix                   # explicit worktree name
@@ -103,6 +121,9 @@ wt new --skip-setup             # create the worktree but skip the project's set
 wt ls                           # list worktrees with slot/name/branch/path/ports
 wt cd                           # cd to the main worktree
 wt cd <name>                    # cd to an existing worktree
+
+wt update                       # update an installed standalone wt
+wt update --check               # check for a stable update without changing files
 
 wt rm <name>                    # teardown + remove + free slot + delete branch
 wt rm <name> --force            # bypass dirty / unmerged checks

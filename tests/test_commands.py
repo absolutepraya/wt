@@ -41,6 +41,15 @@ def test_new_default_creates_worktree_and_branch(configured_repo, wt_module, cap
     assert branch.startswith("testuser/")
 
 
+@pytest.mark.parametrize("flag", ["--version", "-V"])
+def test_version_flag_reports_cli_version(wt_module, capsys, flag):
+    with pytest.raises(SystemExit) as exc_info:
+        wt_module.main([flag])
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out == f"wt {wt_module.VERSION}\n"
+
+
 def test_new_cd_emits_sentinel_when_requested(configured_repo, wt_module, capsys):
     rc = wt_module.cmd_new(name="adelaide", branch=None, from_=None,
                            run_setup=True, cd_after_create=True,

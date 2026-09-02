@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -64,6 +65,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Check version metadata
+        run: python scripts/check-version.py
+
       - name: Check npm launcher
         run: npm run check
 
@@ -73,3 +77,168 @@ jobs:
       - name: Pack and install in a consumer project
         run: |
           bash scripts/check-npm-package.sh
+
+  release:
+    name: Publish stable release
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    needs: [test, npm-package]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: wt-release-main
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      PACKAGE_NAME: "@absolutepraya/wt"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install npm trusted publishing support
+        run: npm install --global npm@11.5.1
+
+      - name: Validate release version
+        id: version
+        run: |
+          version="$(python scripts/check-version.py --print)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::release versions must be stable X.Y.Z values, got $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check existing release tag
+        id: release_state
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --force origin
+          if git show-ref --tags --verify --quiet "refs/tags/$TAG"; then
+            tag_target="$(git rev-list -n 1 "$TAG")"
+            if [ "$tag_target" = "$GITHUB_SHA" ]; then
+              echo "action=continue" >> "$GITHUB_OUTPUT"
+              echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+              echo "$TAG already points to this main commit"
+            else
+              echo "action=skip" >> "$GITHUB_OUTPUT"
+              echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::$TAG is already released from $tag_target; leaving it unchanged"
+            fi
+          else
+            echo "action=continue" >> "$GITHUB_OUTPUT"
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+            echo "No existing $TAG tag found"
+          fi
+
+      - name: Build release assets
+        id: assets
+        if: steps.release_state.outputs.action != 'skip'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          release_dir="$RUNNER_TEMP/wt-release"
+          mkdir -p "$release_dir"
+          cp bin/wt "$release_dir/wt"
+          cp shell/wt.sh "$release_dir/wt.sh"
+          cp shell/wt.fish "$release_dir/wt.fish"
+          chmod 755 "$release_dir/wt"
+          npm pack --pack-destination "$release_dir" >/dev/null
+          tarball="$(find "$release_dir" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          test -n "$tarball"
+          expected="$release_dir/absolutepraya-wt-$VERSION.tgz"
+          test "$tarball" = "$expected"
+          (
+            cd "$release_dir"
+            sha256sum wt wt.sh wt.fish "$(basename "$tarball")" > checksums.txt
+          )
+          echo "dir=$release_dir" >> "$GITHUB_OUTPUT"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Publish npm package when needed
+        if: steps.release_state.outputs.action != 'skip'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TARBALL: ${{ steps.assets.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          version_file="$RUNNER_TEMP/npm-version.txt"
+          error_file="$RUNNER_TEMP/npm-version-error.txt"
+          if npm view "$PACKAGE_NAME@$VERSION" version --json >"$version_file" 2>"$error_file"; then
+            published_version="$(tr -d '"[:space:]' < "$version_file")"
+            if [ "$published_version" != "$VERSION" ]; then
+              echo "::error::npm returned version $published_version for $PACKAGE_NAME@$VERSION"
+              exit 1
+            fi
+            echo "npm package $PACKAGE_NAME@$VERSION is already published"
+          else
+            if ! grep -Eq 'E404|404 Not Found|No match found' "$error_file"; then
+              cat "$error_file" >&2
+              exit 1
+            fi
+            echo "Publishing $PACKAGE_NAME@$VERSION through npm Trusted Publishing"
+            npm publish "$TARBALL" --access public
+          fi
+
+      - name: Create or verify release tag
+        if: steps.release_state.outputs.action != 'skip'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          TAG_EXISTS: ${{ steps.release_state.outputs.tag_exists }}
+        run: |
+          set -euo pipefail
+          if [ "$TAG_EXISTS" = "true" ]; then
+            echo "$TAG already points to this main commit"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" "$GITHUB_SHA" -m "Release $TAG"
+            if ! git push origin "$TAG"; then
+              remote_tag_target="$(git ls-remote origin "refs/tags/$TAG^{}" | awk 'NR == 1 {print $1}')"
+              if [ "$remote_tag_target" != "$GITHUB_SHA" ]; then
+                echo "::error::could not create the expected release tag $TAG"
+                exit 1
+              fi
+            fi
+          fi
+
+      - name: Create or update GitHub Release
+        if: steps.release_state.outputs.action != 'skip'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_DIR: ${{ steps.assets.outputs.dir }}
+          TARBALL: ${{ steps.assets.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          assets=(
+            "$RELEASE_DIR/wt"
+            "$RELEASE_DIR/wt.sh"
+            "$RELEASE_DIR/wt.fish"
+            "$TARBALL"
+            "$RELEASE_DIR/checksums.txt"
+          )
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG" \
+              --verify-tag \
+              --title "$TAG" \
+              --generate-notes \
+              "${assets[@]}"
+          fi
