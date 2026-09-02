@@ -4,7 +4,7 @@
 # Two usage modes:
 #   1. Remote (curl|sh):
 #        curl -sSL https://raw.githubusercontent.com/absolutepraya/wt/main/install.sh | sh
-#      Downloads bin/wt and shell/wt.sh from the main branch (override with
+#      Downloads bin/wt and all shell wrappers from the main branch (override with
 #      WT_REF=<branch|tag|sha>).
 #
 #   2. Local: run from a checked-out repo:
@@ -13,7 +13,7 @@
 #
 # What it does:
 #   - Installs the `wt` script to $PREFIX/bin/wt (default ~/.local/bin/wt).
-#   - Installs the shell wrapper to $WT_CONFIG_DIR (default ~/.config/wt/wt.sh).
+#   - Installs shell wrappers to $WT_CONFIG_DIR (default ~/.config/wt/).
 #   - Idempotently appends a `source` line to ~/.zshrc and ~/.bashrc between
 #     "# wt-managed: BEGIN" / "# wt-managed: END" markers.
 #
@@ -28,6 +28,7 @@ WT_REF="${WT_REF:-main}"
 
 BIN_DEST="$PREFIX/bin/wt"
 SHELL_DEST="$WT_CONFIG_DIR/wt.sh"
+FISH_DEST="$WT_CONFIG_DIR/wt.fish"
 
 # Detect whether we're running from a checked-out repo or a piped curl.
 script_dir=""
@@ -38,7 +39,8 @@ elif [ -n "${0-}" ] && [ -f "$0" ]; then
 fi
 
 is_local=0
-if [ -n "$script_dir" ] && [ -f "$script_dir/bin/wt" ] && [ -f "$script_dir/shell/wt.sh" ]; then
+if [ -n "$script_dir" ] && [ -f "$script_dir/bin/wt" ] \
+  && [ -f "$script_dir/shell/wt.sh" ] && [ -f "$script_dir/shell/wt.fish" ]; then
   is_local=1
 fi
 
@@ -82,10 +84,13 @@ echo "Installed: $BIN_DEST"
 fetch shell/wt.sh "$SHELL_DEST"
 echo "Installed: $SHELL_DEST"
 
+fetch shell/wt.fish "$FISH_DEST"
+echo "Installed: $FISH_DEST"
+
 # Record the installed paths so `wt update` can update the same standalone
 # installation later, including installations that use a custom prefix.
 INSTALL_METADATA="$WT_CONFIG_DIR/install.json"
-python3 - "$INSTALL_METADATA" "$BIN_DEST" "$SHELL_DEST" <<'PY'
+python3 - "$INSTALL_METADATA" "$BIN_DEST" "$SHELL_DEST" "$FISH_DEST" <<'PY'
 import json
 import os
 import sys
@@ -102,6 +107,7 @@ temporary_path.write_text(
             "channel": "standalone",
             "binary": str(Path(sys.argv[2]).expanduser().resolve()),
             "shell_wrapper": str(Path(sys.argv[3]).expanduser().resolve()),
+            "fish_wrapper": str(Path(sys.argv[4]).expanduser().resolve()),
         },
         indent=2,
     )
@@ -149,12 +155,14 @@ cat <<EOF
 
   Binary:        $BIN_DEST
   Shell wrapper: $SHELL_DEST
+  Fish wrapper:  $FISH_DEST
 
 Make sure $PREFIX/bin is on your PATH, then open a new shell or run:
   source ~/.zshrc       # zsh
   source ~/.bashrc      # bash
 
-For fish, source shell/wt.fish from your config (see README).
+For fish, add this line to your fish config:
+  source $FISH_DEST
 
 Get started:
   cd ~/your-repo

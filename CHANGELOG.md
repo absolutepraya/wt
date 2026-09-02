@@ -4,7 +4,7 @@
 
 - Added `wt --version` and `wt -V` to report the installed CLI version.
 - Added `wt update` and `wt update --check` for checksum-verified updates of standalone installations from stable GitHub Releases.
-- Added release assets for the standalone CLI, shell wrapper, npm tarball, and SHA-256 checksums.
+- Added release assets for the standalone CLI, Bash and Fish shell wrappers, npm tarball, and SHA-256 checksums.
 - Added CI release automation that publishes new package versions and creates matching GitHub Releases after all checks pass.
 - Added npm Trusted Publishing and GitHub Actions permission guidance for tokenless release authentication.
 - Renamed the npm package to `@absolutepraya/wt` and prepared patch release `0.3.1` for the account-owned scope.

@@ -63,7 +63,7 @@ For a new release:
 The release job then:
 
 - verifies the shared version and stable tag shape;
-- builds the npm tarball, standalone CLI, shell wrapper, and checksums;
+- builds the npm tarball, standalone CLI, Bash and Fish shell wrappers, and checksums;
 - publishes the npm version if it is not already present;
 - creates or verifies `vX.Y.Z` without rewriting an existing tag;
 - creates or updates the matching GitHub Release with generated notes and

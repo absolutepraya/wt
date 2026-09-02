@@ -156,6 +156,7 @@ jobs:
           mkdir -p "$release_dir"
           cp bin/wt "$release_dir/wt"
           cp shell/wt.sh "$release_dir/wt.sh"
+          cp shell/wt.fish "$release_dir/wt.fish"
           chmod 755 "$release_dir/wt"
           npm pack --pack-destination "$release_dir" >/dev/null
           tarball="$(find "$release_dir" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
@@ -164,7 +165,7 @@ jobs:
           test "$tarball" = "$expected"
           (
             cd "$release_dir"
-            sha256sum wt wt.sh "$(basename "$tarball")" > checksums.txt
+            sha256sum wt wt.sh wt.fish "$(basename "$tarball")" > checksums.txt
           )
           echo "dir=$release_dir" >> "$GITHUB_OUTPUT"
           echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
@@ -228,6 +229,7 @@ jobs:
           assets=(
             "$RELEASE_DIR/wt"
             "$RELEASE_DIR/wt.sh"
+            "$RELEASE_DIR/wt.fish"
             "$TARBALL"
             "$RELEASE_DIR/checksums.txt"
           )

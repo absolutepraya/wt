@@ -576,12 +576,13 @@ def _install_metadata_path() -> Path:
     return Path.home() / ".config" / "wt" / "install.json"
 
 
-def _installation_paths() -> tuple[Path, Path]:
+def _installation_paths() -> tuple[Path, Path, Path]:
     binary_path = Path(__file__).resolve()
-    wrapper_path = _install_metadata_path().parent / "wt.sh"
     metadata_path = _install_metadata_path()
+    wrapper_path = metadata_path.parent / "wt.sh"
+    fish_wrapper_path = metadata_path.parent / "wt.fish"
     if not metadata_path.is_file():
-        return binary_path, wrapper_path
+        return binary_path, wrapper_path, fish_wrapper_path
 
     try:
         metadata = json.loads(metadata_path.read_text())
@@ -599,7 +600,10 @@ def _installation_paths() -> tuple[Path, Path]:
     recorded_wrapper = metadata.get("shell_wrapper")
     if isinstance(recorded_wrapper, str):
         wrapper_path = Path(recorded_wrapper).expanduser()
-    return binary_path, wrapper_path
+    recorded_fish_wrapper = metadata.get("fish_wrapper")
+    if isinstance(recorded_fish_wrapper, str):
+        fish_wrapper_path = Path(recorded_fish_wrapper).expanduser()
+    return binary_path, wrapper_path, fish_wrapper_path
 
 
 def _is_source_checkout(binary_path: Path) -> bool:
@@ -623,11 +627,16 @@ def _parse_checksums(payload: bytes) -> dict[str, str]:
 
 
 def _validate_update_payloads(
-    *, cli_payload: bytes, wrapper_payload: bytes, version: tuple[int, int, int]
+    *,
+    cli_payload: bytes,
+    wrapper_payload: bytes,
+    fish_wrapper_payload: bytes,
+    version: tuple[int, int, int],
 ) -> None:
     try:
         cli_text = cli_payload.decode("utf-8")
         wrapper_text = wrapper_payload.decode("utf-8")
+        fish_wrapper_text = fish_wrapper_payload.decode("utf-8")
         tree = ast.parse(cli_text, filename="wt")
     except (UnicodeDecodeError, SyntaxError) as e:
         raise UpdateError(f"downloaded update failed validation: {e}") from e
@@ -648,6 +657,8 @@ def _validate_update_payloads(
         raise UpdateError("downloaded CLI has an unexpected interpreter header")
     if "wt()" not in wrapper_text or "command wt" not in wrapper_text:
         raise UpdateError("downloaded shell wrapper failed validation")
+    if "function wt" not in fish_wrapper_text or "command wt" not in fish_wrapper_text:
+        raise UpdateError("downloaded fish wrapper failed validation")
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -746,7 +757,7 @@ def cmd_update(*, check: bool) -> int:
             "or install the standalone distribution before using `wt update`"
         )
 
-    binary_path, wrapper_path = _installation_paths()
+    binary_path, wrapper_path, fish_wrapper_path = _installation_paths()
     if _is_source_checkout(binary_path):
         raise UpdateError(
             "this is a source checkout; use `install.sh` or a standalone installation "
@@ -769,7 +780,7 @@ def cmd_update(*, check: bool) -> int:
     if not os.access(binary_path.parent, os.W_OK):
         raise UpdateError(f"install directory is not writable: {binary_path.parent}")
 
-    required_assets = {"wt", "wt.sh", "checksums.txt"}
+    required_assets = {"wt", "wt.sh", "wt.fish", "checksums.txt"}
     missing = sorted(required_assets - assets.keys())
     if missing:
         raise UpdateError(
@@ -778,9 +789,14 @@ def cmd_update(*, check: bool) -> int:
 
     cli_payload = _fetch_url(assets["wt"])
     wrapper_payload = _fetch_url(assets["wt.sh"])
+    fish_wrapper_payload = _fetch_url(assets["wt.fish"])
     checksum_payload = _fetch_url(assets["checksums.txt"], max_bytes=1_000_000)
     checksums = _parse_checksums(checksum_payload)
-    for name, payload in (("wt", cli_payload), ("wt.sh", wrapper_payload)):
+    for name, payload in (
+        ("wt", cli_payload),
+        ("wt.sh", wrapper_payload),
+        ("wt.fish", fish_wrapper_payload),
+    ):
         expected = checksums.get(name)
         if expected is None:
             raise UpdateError(f"checksums.txt does not contain {name}")
@@ -790,20 +806,27 @@ def cmd_update(*, check: bool) -> int:
     _validate_update_payloads(
         cli_payload=cli_payload,
         wrapper_payload=wrapper_payload,
+        fish_wrapper_payload=fish_wrapper_payload,
         version=latest,
     )
 
     updates = [(binary_path, cli_payload, True)]
     wrapper_installed = wrapper_path.is_file()
+    fish_wrapper_installed = fish_wrapper_path.is_file()
     if wrapper_installed:
         updates.append((wrapper_path, wrapper_payload, False))
+    if fish_wrapper_installed:
+        updates.append((fish_wrapper_path, fish_wrapper_payload, False))
     _atomic_install_updates(updates)
-    if wrapper_installed:
-        print(f"Updated wt from {VERSION} to {_version_string(latest)}.")
-    else:
-        print(f"Updated wt from {VERSION} to {_version_string(latest)}.")
+    print(f"Updated wt from {VERSION} to {_version_string(latest)}.")
+    if not wrapper_installed:
         print(
             f"Shell wrapper not found at {wrapper_path}; run install.sh to install it.",
+            file=sys.stderr,
+        )
+    if not fish_wrapper_installed:
+        print(
+            f"Fish wrapper not found at {fish_wrapper_path}; run install.sh to install it.",
             file=sys.stderr,
         )
     return 0
@@ -1537,7 +1560,7 @@ def main(argv: list[str] | None = None) -> int:
         "update",
         help="update the installed standalone wt CLI to the latest stable release",
         description=(
-            "Update the standalone wt binary and installed shell wrapper from the "
+            "Update the standalone wt binary and installed shell wrappers from the "
             "latest stable GitHub release. npm-managed installations should be "
             "updated through npm."
         ),

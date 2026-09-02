@@ -31,6 +31,7 @@ This installs:
 
 - `~/.local/bin/wt` — the script
 - `~/.config/wt/wt.sh` — the shell wrapper (sourced from your `~/.zshrc` / `~/.bashrc`)
+- `~/.config/wt/wt.fish` — the Fish wrapper (source it from your Fish config)
 
 Open a new shell or `source ~/.zshrc` to pick up the wrapper.
 
@@ -64,7 +65,7 @@ wt update --check
 wt update
 ```
 
-The update verifies the release checksums and downloaded payloads before replacing the CLI and installed shell wrapper. npm-managed installations belong to the consumer project's dependency graph, so update those with:
+The update verifies the release checksums and downloaded payloads before replacing the CLI and installed shell wrappers. This includes the Fish wrapper when it is present. npm-managed installations belong to the consumer project's dependency graph, so update those with:
 
 ```bash
 npm update --save-dev @absolutepraya/wt
@@ -80,11 +81,8 @@ Add to `~/.config/fish/config.fish`:
 source ~/.config/wt/wt.fish
 ```
 
-Then download the fish wrapper:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/absolutepraya/wt/main/shell/wt.fish -o ~/.config/wt/wt.fish
-```
+The standalone installer places the wrapper at `~/.config/wt/wt.fish` and
+`wt update` keeps it current with the CLI.
 
 ### Requirements
 

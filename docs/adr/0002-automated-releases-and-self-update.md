@@ -15,12 +15,12 @@ matching immutable `vX.Y.Z` tag, and create or update the matching GitHub
 Release. A concurrent release job is serialized, and an existing tag that
 points at another commit is left untouched rather than overwritten.
 
-Each automated release will attach the standalone CLI, the shell wrapper, the
-exact npm tarball, and a SHA-256 checksum manifest. `wt update` will use the
-latest stable GitHub Release, verify those assets and their embedded version,
-then replace the installed standalone files atomically with rollback on
-failure. npm-managed installations remain controlled by the consumer's npm
-dependency graph.
+Each automated release will attach the standalone CLI, the Bash and Fish shell
+wrappers, the exact npm tarball, and a SHA-256 checksum manifest. `wt update`
+will use the latest stable GitHub Release, verify those assets and their
+embedded version, then replace the installed standalone files atomically with
+rollback on failure. npm-managed installations remain controlled by the
+consumer's npm dependency graph.
 
 ## Considered options
 
