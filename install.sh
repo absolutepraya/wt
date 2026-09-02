@@ -82,6 +82,35 @@ echo "Installed: $BIN_DEST"
 fetch shell/wt.sh "$SHELL_DEST"
 echo "Installed: $SHELL_DEST"
 
+# Record the installed paths so `wt update` can update the same standalone
+# installation later, including installations that use a custom prefix.
+INSTALL_METADATA="$WT_CONFIG_DIR/install.json"
+python3 - "$INSTALL_METADATA" "$BIN_DEST" "$SHELL_DEST" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+metadata_path = Path(sys.argv[1])
+metadata_path.parent.mkdir(parents=True, exist_ok=True)
+temporary_path = metadata_path.with_name(
+    f".{metadata_path.name}.tmp.{os.getpid()}"
+)
+temporary_path.write_text(
+    json.dumps(
+        {
+            "channel": "standalone",
+            "binary": str(Path(sys.argv[2]).expanduser().resolve()),
+            "shell_wrapper": str(Path(sys.argv[3]).expanduser().resolve()),
+        },
+        indent=2,
+    )
+    + "\n"
+)
+os.replace(temporary_path, metadata_path)
+PY
+echo "Recorded install metadata: $INSTALL_METADATA"
+
 # Inject `source` line between markers in shell rc files.
 inject_source_line() {
   local rc="$1"

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import sys
 from pathlib import Path
+
+VERSION = "0.3.1"
 
 # === config ===
 
@@ -483,6 +486,327 @@ def _term_width(default: int = 80) -> int:
 import re as _re
 
 _ANSI_RE = _re.compile(r"\x1b\[[0-9;]*m")
+
+
+# === self_update ===
+
+import stat
+import tempfile
+import urllib.error
+import urllib.request
+
+
+_LATEST_RELEASE_URL = "https://api.github.com/repos/absolutepraya/wt/releases/latest"
+_UPDATE_MAX_BYTES = 10 * 1024 * 1024
+_STABLE_VERSION_RE = _re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+_SHA256_RE = _re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+class UpdateError(Exception):
+    """Raised when a standalone CLI update cannot be completed safely."""
+
+
+def _parse_stable_version(value: str) -> tuple[int, int, int]:
+    text = value.removeprefix("v")
+    match = _STABLE_VERSION_RE.fullmatch(text)
+    if not match:
+        raise UpdateError(f"unsupported stable version {value!r}")
+    return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
+
+
+def _version_string(version: tuple[int, int, int]) -> str:
+    return ".".join(str(part) for part in version)
+
+
+def _fetch_url(url: str, *, max_bytes: int = _UPDATE_MAX_BYTES) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": f"wt/{VERSION}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = response.read(max_bytes + 1)
+    except urllib.error.HTTPError as e:
+        raise UpdateError(f"download failed with HTTP {e.code}: {url}") from e
+    except urllib.error.URLError as e:
+        raise UpdateError(f"download failed: {e.reason}") from e
+    except OSError as e:
+        raise UpdateError(f"download failed: {e}") from e
+    if len(payload) > max_bytes:
+        raise UpdateError(f"download is larger than the {max_bytes} byte safety limit")
+    return payload
+
+
+def _latest_release() -> tuple[tuple[int, int, int], str, dict[str, str]]:
+    try:
+        release = json.loads(_fetch_url(_LATEST_RELEASE_URL, max_bytes=1_000_000))
+    except json.JSONDecodeError as e:
+        raise UpdateError("GitHub returned invalid release metadata") from e
+    if not isinstance(release, dict):
+        raise UpdateError("GitHub returned an invalid release response")
+    if release.get("draft") or release.get("prerelease"):
+        raise UpdateError("GitHub did not return a stable release")
+
+    tag = release.get("tag_name")
+    if not isinstance(tag, str):
+        raise UpdateError("latest GitHub release has no tag")
+    version = _parse_stable_version(tag)
+    expected_tag = f"v{_version_string(version)}"
+    if tag != expected_tag:
+        raise UpdateError(f"latest GitHub release tag {tag!r} is not a stable vX.Y.Z tag")
+
+    assets: dict[str, str] = {}
+    for asset in release.get("assets", []):
+        if not isinstance(asset, dict):
+            continue
+        name = asset.get("name")
+        url = asset.get("browser_download_url")
+        if isinstance(name, str) and isinstance(url, str):
+            assets[name] = url
+    return version, tag, assets
+
+
+def _install_metadata_path() -> Path:
+    config_dir = os.environ.get("WT_CONFIG_DIR")
+    if config_dir:
+        return Path(config_dir).expanduser() / "install.json"
+    return Path.home() / ".config" / "wt" / "install.json"
+
+
+def _installation_paths() -> tuple[Path, Path]:
+    binary_path = Path(__file__).resolve()
+    wrapper_path = _install_metadata_path().parent / "wt.sh"
+    metadata_path = _install_metadata_path()
+    if not metadata_path.is_file():
+        return binary_path, wrapper_path
+
+    try:
+        metadata = json.loads(metadata_path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        raise UpdateError(f"cannot read install metadata at {metadata_path}: {e}") from e
+    if not isinstance(metadata, dict):
+        raise UpdateError(f"install metadata at {metadata_path} is not an object")
+
+    recorded_binary = metadata.get("binary")
+    if isinstance(recorded_binary, str):
+        if Path(recorded_binary).expanduser().resolve() != binary_path:
+            raise UpdateError(
+                f"install metadata points to {recorded_binary}, but this CLI is {binary_path}"
+            )
+    recorded_wrapper = metadata.get("shell_wrapper")
+    if isinstance(recorded_wrapper, str):
+        wrapper_path = Path(recorded_wrapper).expanduser()
+    return binary_path, wrapper_path
+
+
+def _is_source_checkout(binary_path: Path) -> bool:
+    repo_root = binary_path.parent.parent if binary_path.parent.name == "bin" else None
+    return bool(repo_root and (repo_root / "install.sh").is_file())
+
+
+def _parse_checksums(payload: bytes) -> dict[str, str]:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise UpdateError("checksums.txt is not valid UTF-8") from e
+
+    checksums: dict[str, str] = {}
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) != 2 or not _SHA256_RE.fullmatch(fields[0]):
+            continue
+        checksums[fields[1].removeprefix("*")] = fields[0].lower()
+    return checksums
+
+
+def _validate_update_payloads(
+    *, cli_payload: bytes, wrapper_payload: bytes, version: tuple[int, int, int]
+) -> None:
+    try:
+        cli_text = cli_payload.decode("utf-8")
+        wrapper_text = wrapper_payload.decode("utf-8")
+        tree = ast.parse(cli_text, filename="wt")
+    except (UnicodeDecodeError, SyntaxError) as e:
+        raise UpdateError(f"downloaded update failed validation: {e}") from e
+
+    cli_version: str | None = None
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if any(isinstance(target, ast.Name) and target.id == "VERSION" for target in node.targets):
+            if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                cli_version = node.value.value
+            break
+    if cli_version != _version_string(version):
+        raise UpdateError(
+            "downloaded CLI version does not match the GitHub release tag"
+        )
+    if not cli_text.startswith("#!/usr/bin/env python3"):
+        raise UpdateError("downloaded CLI has an unexpected interpreter header")
+    if "wt()" not in wrapper_text or "command wt" not in wrapper_text:
+        raise UpdateError("downloaded shell wrapper failed validation")
+
+
+def _fsync_directory(directory: Path) -> None:
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _stage_update_file(destination: Path, payload: bytes, *, executable: bool) -> Path:
+    if not destination.parent.is_dir():
+        raise UpdateError(f"install directory does not exist: {destination.parent}")
+    name: str | None = None
+    try:
+        fd, name = tempfile.mkstemp(
+            prefix=f".{destination.name}.wt-update-",
+            dir=destination.parent,
+        )
+        with os.fdopen(fd, "wb") as staged:
+            staged.write(payload)
+            staged.flush()
+            os.fsync(staged.fileno())
+        mode = stat.S_IMODE(destination.stat().st_mode) if destination.exists() else 0o644
+        if executable:
+            mode |= 0o111
+        os.chmod(name, mode)
+        return Path(name)
+    except OSError as e:
+        if name is not None:
+            try:
+                Path(name).unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise UpdateError(f"cannot stage update at {destination}: {e}") from e
+
+
+def _atomic_install_updates(
+    updates: list[tuple[Path, bytes, bool]],
+) -> None:
+    staged: list[tuple[Path, Path]] = []
+    replaced: list[tuple[Path, Path | None]] = []
+    try:
+        for destination, payload, executable in updates:
+            staged.append(
+                (destination, _stage_update_file(destination, payload, executable=executable))
+            )
+
+        for destination, staged_path in staged:
+            backup: Path | None = None
+            if destination.exists():
+                fd, backup_name = tempfile.mkstemp(
+                    prefix=f".{destination.name}.wt-backup-",
+                    dir=destination.parent,
+                )
+                os.close(fd)
+                backup = Path(backup_name)
+                backup.unlink()
+                os.replace(destination, backup)
+            try:
+                os.replace(staged_path, destination)
+            except OSError:
+                if backup is not None and backup.exists():
+                    os.replace(backup, destination)
+                raise
+            replaced.append((destination, backup))
+            _fsync_directory(destination.parent)
+    except (OSError, UpdateError) as e:
+        for destination, backup in reversed(replaced):
+            try:
+                destination.unlink(missing_ok=True)
+                if backup is not None and backup.exists():
+                    os.replace(backup, destination)
+            except OSError:
+                pass
+        for _destination, staged_path in staged:
+            staged_path.unlink(missing_ok=True)
+        raise UpdateError(f"could not install update safely: {e}") from e
+    finally:
+        for _destination, backup in replaced:
+            if backup is not None:
+                backup.unlink(missing_ok=True)
+        for _destination, staged_path in staged:
+            staged_path.unlink(missing_ok=True)
+
+
+def cmd_update(*, check: bool) -> int:
+    if os.environ.get("WT_INSTALL_CHANNEL") == "npm":
+        raise UpdateError(
+            "this is an npm-managed installation; run `npm update @absolutepraya/wt` "
+            "or install the standalone distribution before using `wt update`"
+        )
+
+    binary_path, wrapper_path = _installation_paths()
+    if _is_source_checkout(binary_path):
+        raise UpdateError(
+            "this is a source checkout; use `install.sh` or a standalone installation "
+            "to update wt"
+        )
+    if not binary_path.is_file():
+        raise UpdateError(f"installed CLI not found at {binary_path}")
+
+    current = _parse_stable_version(VERSION)
+    latest, tag, assets = _latest_release()
+    if latest <= current:
+        if latest == current:
+            print(f"wt {VERSION} is up to date ({tag}).")
+        else:
+            print(f"wt {VERSION} is newer than the latest stable release ({tag}).")
+        return 0
+    if check:
+        print(f"wt {VERSION} update available: {tag}.")
+        return 0
+    if not os.access(binary_path.parent, os.W_OK):
+        raise UpdateError(f"install directory is not writable: {binary_path.parent}")
+
+    required_assets = {"wt", "wt.sh", "checksums.txt"}
+    missing = sorted(required_assets - assets.keys())
+    if missing:
+        raise UpdateError(
+            f"latest stable release {tag} is missing update assets: {', '.join(missing)}"
+        )
+
+    cli_payload = _fetch_url(assets["wt"])
+    wrapper_payload = _fetch_url(assets["wt.sh"])
+    checksum_payload = _fetch_url(assets["checksums.txt"], max_bytes=1_000_000)
+    checksums = _parse_checksums(checksum_payload)
+    for name, payload in (("wt", cli_payload), ("wt.sh", wrapper_payload)):
+        expected = checksums.get(name)
+        if expected is None:
+            raise UpdateError(f"checksums.txt does not contain {name}")
+        actual = hashlib.sha256(payload).hexdigest()
+        if actual != expected:
+            raise UpdateError(f"checksum verification failed for {name}")
+    _validate_update_payloads(
+        cli_payload=cli_payload,
+        wrapper_payload=wrapper_payload,
+        version=latest,
+    )
+
+    updates = [(binary_path, cli_payload, True)]
+    wrapper_installed = wrapper_path.is_file()
+    if wrapper_installed:
+        updates.append((wrapper_path, wrapper_payload, False))
+    _atomic_install_updates(updates)
+    if wrapper_installed:
+        print(f"Updated wt from {VERSION} to {_version_string(latest)}.")
+    else:
+        print(f"Updated wt from {VERSION} to {_version_string(latest)}.")
+        print(
+            f"Shell wrapper not found at {wrapper_path}; run install.sh to install it.",
+            file=sys.stderr,
+        )
+    return 0
 
 
 def _visual_len(s: str) -> int:
@@ -1159,10 +1483,18 @@ def main(argv: list[str] | None = None) -> int:
             "  wt rm <name>                      teardown + remove worktree + free slot + delete branch\n"
             "  wt rm <name> --force              bypass dirty/unmerged checks\n"
             "  wt rm <name> --keep-branch        keep the branch when removing the worktree\n"
+            "  wt update                         update an installed standalone wt\n"
+            "  wt update --check                 check for a stable update without changing files\n"
             "\n"
             "Run `wt <command> -h` for command-specific options."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "-V", "--version",
+        action="version",
+        version=f"%(prog)s {VERSION}",
+        help="show the installed wt version and exit",
     )
     sub = parser.add_subparsers(
         dest="cmd", required=True, metavar="<command>",
@@ -1201,6 +1533,21 @@ def main(argv: list[str] | None = None) -> int:
         description="Show all worktrees managed by wt plus any unmanaged worktrees git knows about.",
     )
 
+    p_update = sub.add_parser(
+        "update",
+        help="update the installed standalone wt CLI to the latest stable release",
+        description=(
+            "Update the standalone wt binary and installed shell wrapper from the "
+            "latest stable GitHub release. npm-managed installations should be "
+            "updated through npm."
+        ),
+    )
+    p_update.add_argument(
+        "--check",
+        action="store_true",
+        help="check for an available update without downloading or changing files",
+    )
+
     p_cd = sub.add_parser(
         "cd",
         help="cd into an existing worktree (defaults to main)",
@@ -1236,6 +1583,8 @@ def main(argv: list[str] | None = None) -> int:
     cwd = Path.cwd()
 
     try:
+        if args.cmd == "update":
+            return cmd_update(check=args.check)
         if args.cmd == "new":
             return cmd_new(
                 name=args.name, branch=args.branch, from_=args.from_,
@@ -1257,7 +1606,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"stub: {args.cmd}", file=sys.stderr)
         return 0
     except (ConfigNotFound, ConfigError, GitError, SlotsFull,
-            SetupFailed, TeardownFailed) as e:
+            SetupFailed, TeardownFailed, UpdateError) as e:
         print(f"wt: error: {e}", file=sys.stderr)
         return 1
 

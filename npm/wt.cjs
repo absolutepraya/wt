@@ -49,6 +49,7 @@ if (!python) {
 
 const [command, prefix] = python;
 const result = spawnSync(command, [...prefix, cliPath, ...cliArgs], {
+  env: { ...process.env, WT_INSTALL_CHANNEL: "npm" },
   stdio: "inherit",
 });
 
