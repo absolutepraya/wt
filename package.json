@@ -21,17 +21,28 @@
     "node": ">=18"
   },
   "bin": {
-    "wt": "npm/wt.cjs"
+    "wt": "dist/wt.cjs"
   },
   "files": [
-    "bin/wt",
-    "npm/wt.cjs"
+    "dist/wt.cjs"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "check": "node --check npm/wt.cjs",
-    "pack:check": "npm pack --dry-run"
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node scripts/run-tests.mjs",
+    "check-version": "node scripts/check-version.mjs",
+    "check": "npm run typecheck && npm run build && node --check dist/wt.cjs",
+    "pack:check": "npm run build && npm pack --dry-run",
+    "smoke:npm": "npm run build && node scripts/check-npm-package.mjs"
+  },
+  "devDependencies": {
+    "@iarna/toml": "^2.2.5",
+    "@types/node": "^26.4.1",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
   }
 }
