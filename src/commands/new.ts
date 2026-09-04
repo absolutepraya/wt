@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join, relative, resolve } from "node:path";
 import { loadConfig } from "../config.js";
 import { GitError } from "../errors.js";
@@ -31,6 +32,7 @@ interface NewResult {
   root: string;
   statePath: string;
   portOffsetInterval: number;
+  generationToken: string;
 }
 
 function splitBase(base: string): [string, string] {
@@ -40,6 +42,13 @@ function splitBase(base: string): [string, string] {
 }
 
 function contextHome(context: CliContext): string | undefined { return context.env.HOME || context.env.USERPROFILE; }
+
+function newGenerationToken(state: Awaited<ReturnType<typeof loadState>>): string {
+  let token = randomUUID();
+  const existing = new Set(Object.values(state.slots).map((entry) => entry.generation_token).filter((value): value is string => Boolean(value)));
+  while (existing.has(token)) token = randomUUID();
+  return token;
+}
 
 export async function runNew(
   context: CliContext,
@@ -97,7 +106,8 @@ export async function runNew(
     }
     const inUse = branchInUse(services.git, root, branch);
     if (inUse) throw new GitError(`branch ${JSON.stringify(branch)} is already checked out in another worktree.`);
-    const entry: StateEntry = { name, branch, path: relative(root, worktreePath), base, tracks_remote: tracksRemote, created_at: services.now().toISOString() };
+    const generationToken = newGenerationToken(state);
+    const entry: StateEntry = { name, branch, path: relative(root, worktreePath), base, tracks_remote: tracksRemote, created_at: services.now().toISOString(), generation_token: generationToken };
     const reserved = reserveSlot(state, config.maxSlots, entry);
     let worktreeCreated = false;
     try {
@@ -118,7 +128,7 @@ export async function runNew(
       }
       throw error;
     }
-    return { name, branch, base, tracksRemote, path: worktreePath, slot: reserved.slot, root, statePath, portOffsetInterval: config.portOffsetInterval };
+    return { name, branch, base, tracksRemote, path: worktreePath, slot: reserved.slot, root, statePath, portOffsetInterval: config.portOffsetInterval, generationToken };
   });
 
   if (!options.noSetup && config.setup.length > 0) {
@@ -128,7 +138,7 @@ export async function runNew(
       if (config.teardown.length > 0) {
         try { runScripts(config.teardown, result.path, env, context.io, "teardown"); } catch { /* Setup failure remains primary. */ }
       }
-      try { await rollbackWorktree(services, result.root, result.path, result.branch, result.statePath, true); }
+      try { await rollbackWorktree(services, result.root, result.path, result.branch, result.statePath, true, result.generationToken); }
       catch (rollback) { writeOutput(context.io.stderr, `wt: warning: setup rollback needs attention: ${rollback instanceof Error ? rollback.message : String(rollback)}`); }
       throw error;
     }

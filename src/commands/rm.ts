@@ -18,11 +18,16 @@ interface RemoveSnapshot {
   branch: string;
 }
 
-interface SnapshotResult { snapshot?: RemoveSnapshot; diagnostic?: string; }
+interface SnapshotResult { snapshot?: RemoveSnapshot; diagnostic?: string; state?: Awaited<ReturnType<typeof loadState>>; }
 
 function contextHome(context: CliContext): string | undefined { return context.env.HOME || context.env.USERPROFILE; }
 function contains(parent: string, child: string): boolean { const value = relative(parent, child); return value === "" || (!value.startsWith("..") && !isAbsolute(value)); }
-function stateIdentity(entry: StateEntry): string { return `${entry.created_at}\u0000${entry.path}\u0000${entry.branch}`; }
+function sameEntryIdentity(expected: StateEntry, current: StateEntry): boolean {
+  return expected.created_at === current.created_at
+    && expected.path === current.path
+    && expected.branch === current.branch
+    && expected.generation_token === current.generation_token;
+}
 function targetPath(root: string, worktreeRoot: string, entry: StateEntry): string {
   return assertInsideWorktreeRoot(resolve(root, entry.path), worktreeRoot);
 }
@@ -42,13 +47,14 @@ function inspectSnapshot(
   if (!match) return { diagnostic: `wt: no worktree named ${JSON.stringify(name)}.` };
   const [slot, entry] = match as [string, StateEntry];
   const path = targetPath(root, worktreeRoot, entry);
+  if (!entry.generation_token) return { diagnostic: `wt: state for ${JSON.stringify(name)} has no generation token; refusing destructive removal. Recreate or migrate this worktree state first.` };
   const worktree: GitWorktree | undefined = listWorktrees(services.git, root).find((candidate) => normalizePath(candidate.path) === normalizePath(path));
   if (!worktree) return { diagnostic: `wt: stale state for ${JSON.stringify(name)}: ${path} is not an active Git worktree.` };
   return { snapshot: { slot, entry: { ...entry }, path, branch: worktree.branch ?? entry.branch } };
 }
 
 function sameSnapshot(expected: RemoveSnapshot, current: RemoveSnapshot): boolean {
-  return stateIdentity(expected.entry) === stateIdentity(current.entry)
+  return sameEntryIdentity(expected.entry, current.entry)
     && normalizePath(expected.path) === normalizePath(current.path)
     && expected.branch === current.branch;
 }
@@ -68,6 +74,22 @@ async function inspectUnderLock(
     if (expected && !sameSnapshot(expected, result.snapshot)) return { diagnostic: changedDiagnostic(name) };
     return result;
   });
+}
+
+async function revalidateState(
+  statePath: string,
+  root: string,
+  worktreeRoot: string,
+  name: string,
+  expected: RemoveSnapshot,
+): Promise<SnapshotResult> {
+  const state = await loadState(statePath);
+  const match = Object.entries(state.slots).find(([, entry]) => entry.name === name);
+  if (!match) return { diagnostic: changedDiagnostic(name) };
+  const [slot, entry] = match as [string, StateEntry];
+  const path = targetPath(root, worktreeRoot, entry);
+  if (!entry.generation_token || !sameEntryIdentity(entry, expected.entry) || slot !== expected.slot || normalizePath(path) !== normalizePath(expected.path)) return { diagnostic: changedDiagnostic(name) };
+  return { state, snapshot: { slot, entry: { ...entry }, path, branch: expected.branch } };
 }
 
 export async function runRm(context: CliContext, options: RemoveOptions, services: WorktreeServices = defaultWorktreeServices): Promise<number> {
@@ -119,28 +141,26 @@ export async function runRm(context: CliContext, options: RemoveOptions, service
       return 1;
     }
 
-    // Re-read state after the Git lookup as the final precondition. This
-    // closes the rm/rm/new replacement window before removal and persistence.
-    const finalState = await loadState(paths.statePath);
-    const finalMatch = Object.entries(finalState.slots).find(([, entry]) => entry.name === options.name);
-    if (!finalMatch || stateIdentity(finalMatch[1]) !== stateIdentity(snapshot.entry)) {
-      writeOutput(context.io.stderr, changedDiagnostic(options.name));
-      return 1;
-    }
+    const beforeRemove = await revalidateState(paths.statePath, root, worktreeRoot, options.name, snapshot);
+    if (beforeRemove.diagnostic || !beforeRemove.snapshot || !beforeRemove.state) { writeOutput(context.io.stderr, beforeRemove.diagnostic ?? changedDiagnostic(options.name)); return 1; }
 
     if (!options.keepBranch && !options.force && hasUnmergedCommits(services.git, root, latest.snapshot.branch, config.defaultBase)) {
       const summary = unmergedCommitSummary(services.git, root, latest.snapshot.branch, config.defaultBase).map((line) => `  ${line}`).join("\n") || "  (none)";
       writeOutput(context.io.stderr, `wt: branch ${JSON.stringify(latest.snapshot.branch)} has unmerged commits not in ${JSON.stringify(config.defaultBase)}:\n${summary}\nUse --force to remove anyway, or --keep-branch to keep the branch.`);
       return 1;
     }
-    try { removeWorktree(services.git, root, latest.snapshot.path, options.force); }
-    catch (error) { writeOutput(context.io.stderr, `wt: cannot remove worktree ${latest.snapshot.path}: ${error instanceof Error ? error.message : String(error)}`); return 1; }
+    try { removeWorktree(services.git, root, beforeRemove.snapshot.path, options.force); }
+    catch (error) { writeOutput(context.io.stderr, `wt: cannot remove worktree ${beforeRemove.snapshot.path}: ${error instanceof Error ? error.message : String(error)}`); return 1; }
+    const beforeBranch = await revalidateState(paths.statePath, root, worktreeRoot, options.name, snapshot);
+    if (beforeBranch.diagnostic || !beforeBranch.snapshot || !beforeBranch.state) { writeOutput(context.io.stderr, beforeBranch.diagnostic ?? changedDiagnostic(options.name)); return 1; }
     if (!options.keepBranch) {
-      try { deleteBranch(services.git, root, latest.snapshot.branch, options.force); }
-      catch (error) { writeOutput(context.io.stderr, `wt: warning: could not delete branch ${JSON.stringify(latest.snapshot.branch)}: ${error instanceof Error ? error.message : String(error)}`); }
+      try { deleteBranch(services.git, root, beforeBranch.snapshot.branch, options.force); }
+      catch (error) { writeOutput(context.io.stderr, `wt: warning: could not delete branch ${JSON.stringify(beforeBranch.snapshot.branch)}: ${error instanceof Error ? error.message : String(error)}`); }
     }
-    await saveState(paths.statePath, freeSlot(finalState, Number(latest.snapshot.slot)));
-    writeOutput(context.io.stdout, renderSection(`Removed worktree: ${options.name}`, { branch: latest.snapshot.branch, path: latest.snapshot.path, slot: `${latest.snapshot.slot} (freed)` }));
+    const beforeFree = await revalidateState(paths.statePath, root, worktreeRoot, options.name, snapshot);
+    if (beforeFree.diagnostic || !beforeFree.snapshot || !beforeFree.state) { writeOutput(context.io.stderr, beforeFree.diagnostic ?? changedDiagnostic(options.name)); return 1; }
+    await saveState(paths.statePath, freeSlot(beforeFree.state, Number(beforeFree.snapshot.slot)));
+    writeOutput(context.io.stdout, renderSection(`Removed worktree: ${options.name}`, { branch: beforeFree.snapshot.branch, path: beforeFree.snapshot.path, slot: `${beforeFree.snapshot.slot} (freed)` }));
     return 0;
   });
 }

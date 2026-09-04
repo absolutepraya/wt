@@ -76,9 +76,9 @@ export function runScripts(
   }
 }
 
-function removeReservation(root: string, statePath: string, path: string): Promise<void> {
+function removeReservation(root: string, statePath: string, path: string, generationToken?: string): Promise<void> {
   return loadState(statePath).then(async (state) => {
-    const slot = Object.entries(state.slots).find(([, entry]) => resolve(root, entry.path) === resolve(path))?.[0];
+    const slot = Object.entries(state.slots).find(([, entry]) => resolve(root, entry.path) === resolve(path) && (generationToken === undefined || entry.generation_token === generationToken))?.[0];
     if (slot) await saveState(statePath, freeSlot(state, Number(slot)));
   });
 }
@@ -91,6 +91,7 @@ export async function rollbackWorktree(
   branch: string,
   statePath: string,
   removeBranch: boolean,
+  generationToken?: string,
 ): Promise<void> {
   const absoluteRoot = resolve(root);
   const absolutePath = resolve(path);
@@ -106,5 +107,5 @@ export async function rollbackWorktree(
   }
   const stateName = basename(statePath);
   const lockPath = join(dirname(statePath), `${stateName.slice(0, stateName.length - extname(stateName).length)}.lock`);
-  await withProjectLock(lockPath, () => removeReservation(absoluteRoot, statePath, absolutePath));
+  await withProjectLock(lockPath, () => removeReservation(absoluteRoot, statePath, absolutePath, generationToken));
 }

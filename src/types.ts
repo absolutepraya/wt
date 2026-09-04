@@ -13,7 +13,8 @@ export interface Config {
   setup: string[];
   teardown: string[];
 }
-export interface StateEntry { name: string; branch: string; path: string; base: string; tracks_remote?: boolean; created_at: string; }
+/** generation_token is optional only to allow safe read-only handling of v1 legacy state. */
+export interface StateEntry { name: string; branch: string; path: string; base: string; tracks_remote?: boolean; created_at: string; generation_token?: string; }
 export interface PersistedState { version: 1; project_root: string; slots: Record<string, StateEntry>; }
 export interface GitWorktree { path: string; head: string; branch: string | null; bare?: boolean; }
 export interface CliIO { stdout: NodeJS.WritableStream; stderr: NodeJS.WritableStream; stdin: NodeJS.ReadableStream; stdoutIsTTY: boolean; stdinIsTTY: boolean; }

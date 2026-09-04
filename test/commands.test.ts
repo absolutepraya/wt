@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { runCd, runLs, runNew, runRm } from "../src/commands/index.js";
 import { ConfigurationError, SetupError } from "../src/errors.js";
-import { listWorktrees, systemGitRunner, type GitResult } from "../src/git.js";
+import { listWorktrees, systemGitRunner } from "../src/git.js";
 import { projectId, statePaths } from "../src/paths.js";
 import { loadState, saveState } from "../src/state.js";
 import type { CliContext } from "../src/types.js";
-import type { WorktreeServices } from "../src/worktrees.js";
 import { createGitFixture, runGit } from "./fixtures.js";
 
 interface Repository { repo: string; home: string; }
@@ -50,6 +50,30 @@ function context(repository: Repository, cwd = repository.repo): CliContext & { 
 }
 
 function statePath(repository: Repository): string { return statePaths(projectId(repository.repo), repository.home).statePath; }
+
+interface CliProcessResult { code: number | null; stdout: string; stderr: string; }
+
+function runCliProcess(repository: Repository, action: "new" | "rm", name: string, extraEnv: Record<string, string>): Promise<CliProcessResult> {
+  const worker = join(mkdtempSync(join(tmpdir(), "wt-command-worker-")), "worker.ts");
+  const commandModule = join(process.cwd(), "src", "commands", "index.ts");
+  writeFileSync(worker, `import { runNew, runRm } from ${JSON.stringify(commandModule)}; const [action, repo, home, name] = process.argv.slice(2); const context = { cwd: repo!, env: { ...process.env, HOME: home!, USER: "test" }, io: { stdout: process.stdout, stderr: process.stderr, stdin: process.stdin, stdoutIsTTY: false, stdinIsTTY: false } }; void (async () => { const code = action === "rm" ? await runRm(context, { name: name!, force: true, keepBranch: false }) : await runNew(context, { name: name!, noSetup: true, cdAfterCreate: false }); process.exitCode = code; })().catch((error) => { console.error(error); process.exitCode = 2; });\n`);
+  const child = spawn(process.execPath, [join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"), worker, action, repository.repo, repository.home, name], { cwd: repository.repo, env: { ...process.env, ...extraEnv }, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = ""; let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+async function waitForFile(path: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${path}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 
 test("new creates a tracked worktree and setup failure rolls Git and state back", async () => {
   const repository = makeRepository('setup = ["exit 7"]');
@@ -138,34 +162,50 @@ test("state-derived escaped paths are rejected before cd, ls, or rm can inspect 
   await assert.rejects(runRm(context(repository), { name: "escaped", force: true, keepBranch: false }), ConfigurationError);
 });
 
-test("rm aborts after teardown when the persisted generation changes", async () => {
+test("rm conservatively rejects legacy state without a generation token", async () => {
   const repository = makeRepository();
-  await runNew(context(repository), { name: "race", noSetup: true, cdAfterCreate: false });
-  let worktreeLists = 0;
-  const services: WorktreeServices = {
-    now: () => new Date(),
-    random: () => 0,
-    git: {
-      run(args: string[], cwd: string): GitResult {
-        const result = systemGitRunner.run(args, cwd);
-        if (args[0] === "worktree" && args[1] === "list") {
-          worktreeLists += 1;
-          if (worktreeLists === 3) {
-            const path = statePath(repository);
-            const changed = JSON.parse(readFileSync(path, "utf8")) as { slots: Record<string, { created_at: string }> };
-            changed.slots["1"]!.created_at = "2026-09-04T00:00:01.000Z";
-            writeFileSync(path, `${JSON.stringify(changed)}\n`);
-          }
-        }
-        return result;
-      },
-    },
-  };
-  const result = context(repository);
-  assert.equal(await runRm(result, { name: "race", force: true, keepBranch: false }, services), 1);
-  assert.match(result.output().stderr, /changed while it was being removed/);
+  await runNew(context(repository), { name: "legacy", noSetup: true, cdAfterCreate: false });
+  const path = statePath(repository);
+  const state = await loadState(path);
+  delete state.slots["1"]!.generation_token;
+  await saveState(path, state);
+  const command = context(repository);
+  assert.equal(await runRm(command, { name: "legacy", force: true, keepBranch: false }), 1);
+  assert.match(command.output().stderr, /no generation token/);
+  assert.equal(listWorktrees(systemGitRunner, repository.repo).some((entry) => entry.path.endsWith("/.worktrees/legacy")), true);
+  assert.equal(systemGitRunner.run(["show-ref", "--verify", "--quiet", "refs/heads/test/legacy"], repository.repo).status, 0);
+});
+
+test("concurrent rm/new lifecycle preserves a replacement when the original teardown resumes", async () => {
+  const repository = makeRepository();
+  const started = join(repository.home, "first-teardown-started");
+  const release = join(repository.home, "first-teardown-release");
+  const teardownCode = "const fs=require('node:fs');const started=process.env.WT_RACE_STARTED;const release=process.env.WT_RACE_RELEASE;if(!fs.existsSync(started)){fs.writeFileSync(started,'1');while(!fs.existsSync(release))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20)}";
+  writeConfig(repository.repo, `teardown = [${JSON.stringify(`node -e ${JSON.stringify(teardownCode)}`)}]`);
+  await runCliProcess(repository, "new", "race", {});
+  const initialState = await loadState(statePath(repository));
+  const initialToken = initialState.slots["1"]!.generation_token;
+  assert.ok(initialToken);
+  const environment = { WT_RACE_STARTED: started, WT_RACE_RELEASE: release };
+  const first = runCliProcess(repository, "rm", "race", environment);
+  try {
+    await waitForFile(started);
+    const second = await runCliProcess(repository, "rm", "race", environment);
+    assert.equal(second.code, 0);
+    const replacement = await runCliProcess(repository, "new", "race", {});
+    assert.equal(replacement.code, 0);
+  } finally {
+    writeFileSync(release, "1");
+  }
+  const result = await first;
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /changed while it was being removed/);
   assert.equal(listWorktrees(systemGitRunner, repository.repo).some((entry) => entry.path.endsWith("/.worktrees/race")), true);
-  assert.equal(Object.values((await loadState(statePath(repository))).slots)[0]!.name, "race");
+  const replacementState = await loadState(statePath(repository));
+  const replacementEntry = Object.values(replacementState.slots)[0]!;
+  assert.equal(replacementEntry.name, "race");
+  assert.ok(replacementEntry.generation_token);
+  assert.notEqual(replacementEntry.generation_token, initialToken);
 });
 
 test("new serializes concurrent allocation through the project lock", async () => {

@@ -18,6 +18,7 @@ function validateEntry(value: unknown, slot: string): asserts value is StateEntr
     if (typeof value[key] !== "string") throw new ConfigurationError(`Invalid state entry ${key} for slot ${slot}.`);
   }
   if (value.tracks_remote !== undefined && typeof value.tracks_remote !== "boolean") throw new ConfigurationError(`Invalid state entry tracks_remote for slot ${slot}.`);
+  if (value.generation_token !== undefined && (typeof value.generation_token !== "string" || value.generation_token.length === 0 || value.generation_token.length > 256 || /[\u0000-\u001f\u007f-\u009f]/.test(value.generation_token))) throw new ConfigurationError(`Invalid state entry generation_token for slot ${slot}.`);
 }
 
 export function validateState(value: unknown): PersistedState {
