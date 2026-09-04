@@ -38,12 +38,24 @@ test("serializes child processes after a confirmed in-path contention attempt", 
   assert.deepEqual(readFileSync(output, "utf8").trim().split("\n"), ["start:holder", "end:holder", "start:waiter", "end:waiter"]);
 });
 
-test("recovers stale metadata-less crash windows without removing a successor", { skip: process.platform === "win32" }, async () => {
+test("recovers stale metadata-less crash windows without removing a successor", async () => {
   const empty = lockPath(); mkdirSync(empty); makeStale(empty); await withProjectLock(empty, () => undefined); assert.throws(() => statSync(empty), /ENOENT/);
   const incomplete = lockPath(); mkdirSync(incomplete); mkdirSync(ownerPath(incomplete, "crashed")); makeStale(incomplete); await withProjectLock(incomplete, () => undefined); assert.throws(() => statSync(incomplete), /ENOENT/);
   const raced = lockPath(); mkdirSync(raced); mkdirSync(ownerPath(raced, "crashed")); makeStale(raced);
   await assert.rejects(withProjectLock(raced, () => undefined, { timeoutMs: 120, testHooks: { beforeStaleCleanup: () => { rmdirSync(ownerPath(raced, "crashed")); rmdirSync(raced); writeLock(raced, "successor"); } } }), (error: unknown) => error instanceof ProjectLockError && error.code === "LOCK_TIMEOUT");
   assert.equal(JSON.parse(readFileSync(metadataPath(raced, "successor"), "utf8")).token, "successor");
+});
+
+test("recovers a stale empty lock on Windows and preserves a successor", { skip: process.platform !== "win32" }, async () => {
+  const recovered = lockPath(); mkdirSync(recovered); makeStale(recovered); let acquired = false;
+  await withProjectLock(recovered, () => { acquired = true; assert.equal(statSync(recovered).isDirectory(), true); });
+  assert.equal(acquired, true); assert.throws(() => statSync(recovered), /ENOENT/);
+
+  const raced = lockPath(); mkdirSync(raced); makeStale(raced);
+  try {
+    await assert.rejects(withProjectLock(raced, () => { throw new Error("unexpected acquisition"); }, { timeoutMs: 0, testHooks: { beforeEmptyLockReplacement: () => { rmdirSync(raced); writeLock(raced, "successor"); } } }), (error: unknown) => error instanceof ProjectLockError && error.code === "LOCK_TIMEOUT");
+    assert.equal(JSON.parse(readFileSync(metadataPath(raced, "successor"), "utf8")).token, "successor");
+  } finally { removeLock(raced, "successor"); }
 });
 
 test("does not replace a successor published during stale empty-lock recovery", async () => {

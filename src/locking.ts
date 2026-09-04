@@ -159,6 +159,13 @@ async function recoverStaleLock(lockPath: string, candidatePath: string, hooks?:
   await hooks?.beforeStaleCleanup?.();
   if (!snapshot.ownerDirectory) {
     await hooks?.beforeEmptyLockReplacement?.();
+    if (process.platform === "win32") {
+      try { await rmdir(lockPath); }
+      catch (error) {
+        if (isMissing(error) || isNotEmpty(error) || (isRecord(error) && error.code === "EPERM")) return "none";
+        throw new ProjectLockError("LOCK_STALE_OWNER", `Unable to remove stale project lock ${lockPath}.`, { cause: error });
+      }
+    }
     try {
       await rename(candidatePath, lockPath);
       return "acquired";
