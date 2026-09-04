@@ -36,7 +36,7 @@ The release-based installer downloads the latest stable release, verifies the SH
 - `~/.config/wt/wt.fish`, the Fish wrapper
 - `~/.config/wt/install.json`, standalone channel metadata
 
-The installer adds managed wrapper blocks to Bash, Zsh, and Fish startup files. The executable is available immediately at `~/.local/bin/wt` even if that directory is not yet in `PATH`. A new shell loads future integration. For the current shell, add the directory to `PATH` and evaluate the shell initializer as shown below.
+The installer adds managed wrapper blocks to Bash, Zsh, and Fish startup files. The executable is available immediately at `~/.local/bin/wt` even if that directory is not yet in `PATH`. Future interactive shells that source the relevant rc or config file will load the integration. Bash login shells may not source `~/.bashrc` automatically, so use your shell's normal login configuration or source the wrapper explicitly. For the current shell, add the directory to `PATH` and evaluate the shell initializer as shown below.
 
 The installer checks the platform, Node.js, Git, and downloader prerequisites
 before writing the destination files. If Node.js or Git is missing, it stops
@@ -183,7 +183,7 @@ wt rm <name> --force            bypass dirty, unmerged, and teardown failures
 wt rm <name> --keep-branch      remove the worktree but preserve its branch
 
 wt update                       update a standalone installation
-wt update --check               check the latest stable release without changes
+wt update --check               check the latest stable release for standalone installs
 wt shell-init bash              print Bash integration
 wt shell-init zsh               print Zsh integration
 wt shell-init fish              print Fish integration
@@ -193,8 +193,10 @@ wt shell-init powershell        print PowerShell integration
 Run `wt <command> --help` or `wt <command> -h` for command-specific usage.
 `wt new` stays in the current directory unless its shell wrapper receives
 `--cd`. `wt update` is only a self-mutating command for a standalone
-installation. For npm installations, use `npm update` as shown above. For a
-source checkout, use Git.
+installation. For a standalone install, `wt update --check` checks the latest
+stable release without changing files. For npm or source installs, it does not
+check the release service. It only prints guidance to update through npm or
+Git. Use `npm update` for npm installations and Git for a source checkout.
 
 ## Configuration
 

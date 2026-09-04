@@ -58,19 +58,23 @@ content fail closed and require an explicit version decision. A failed release
 can be retried after its setup issue is fixed without creating duplicate
 assets.
 
-## Standalone update and rollback
+## Standalone update and installer rollback
 
 `wt update` is limited to standalone installations. It requests the latest
 stable GitHub Release, accepts only an exact `vX.Y.Z` tag and expected release
 asset URLs, verifies every downloaded SHA-256 entry, and checks the Node
-shebang and embedded version in `wt`.
+shebang and embedded version in `wt`. It uses the existing transactional
+replacement behavior for the executable, wrappers, and standalone metadata,
+with rollback on replacement failure. `wt update` does not currently run a
+post-install version/help smoke.
 
-The installer and updater stage files privately, replace the executable,
-wrappers, and standalone metadata as one transaction, and run a direct
-version/help smoke on the installed executable. Any download, validation,
-replacement, or smoke failure leaves the previous installation in place when
-rollback is possible. If rollback itself cannot finish, temporary rollback
-artifacts are retained and the command fails with a recovery diagnostic.
+The standalone installer separately stages files privately, replaces the
+executable, wrappers, and standalone metadata as one transaction, and runs a
+direct version/help smoke on the installed executable. Any download,
+validation, replacement, or installer smoke failure leaves the previous
+installation in place when rollback is possible. If rollback itself cannot
+finish, temporary rollback artifacts are retained and the command fails with
+a recovery diagnostic.
 Neither path mutates a source checkout, an npm dependency, or a shell profile
 through npm.
 

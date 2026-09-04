@@ -71,6 +71,9 @@ Reviewed every match:
 ## Checks
 
 - `git diff --check` passed.
+- Task 11 fix round 1 assertions passed for the installer-only smoke and
+  rollback wording, shell rc/config sourcing qualification, channel-specific
+  `wt update --check` behavior, and delegated workflow status.
 - No em dash characters found in the seven changed documentation files.
 - Changed-file review confirmed only the seven requested docs plus this SDD
   report were modified.
@@ -83,5 +86,5 @@ Reviewed every match:
   matrix. Those checks were completed and reviewed in Tasks 8 and 10.
 - Native Windows, Fish, and PowerShell execution is provided by the hosted CI
   matrix and was not run locally.
-- The delegated worker interface was unavailable, so the scoped edits and
-  review were completed in the controller worktree.
+- Delegated implementation and review completed normally. This fix round
+  addresses the review findings in the scoped documentation directly.
