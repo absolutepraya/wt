@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -76,7 +76,9 @@ test("installer resolves one exact tag, honors overrides, and records a standalo
     assert.deepEqual({ channel: metadata.channel, repository: metadata.repository, tag: metadata.tag }, { channel: "standalone", repository: "absolutepraya/wt", tag: "v0.3.2" });
     const requests = await (await fetch(server.baseUrl + "/requests")).json() as string[];
     assert.deepEqual(requests.filter((path) => path.startsWith("/download/")), ["/download/v0.3.2/wt", "/download/v0.3.2/wt.sh", "/download/v0.3.2/wt.fish", "/download/v0.3.2/checksums.txt"]);
-    assert.match(result.stdout, /Immediate use:.*prefix\/bin\/wt --version/);
+    assert.match(result.stdout, /Immediate use:\s+'[^'\n]*prefix\/bin\/wt' --version/);
+    assert.match(result.stdout, /Current shell cd:.*shell-init bash/);
+    assert.match(result.stdout, /shell-init fish \| source/);
     assert.match(result.stdout, /PowerShell:.*shell-init powershell.*never edits it/);
   } finally {
     await server.stop();
@@ -123,6 +125,65 @@ test("installer preserves existing final files on API, missing asset, and malfor
   }
 });
 
+test("installer propagates a later replacement failure and restores the complete prior installation", async () => {
+  const root = temporaryRoot(), server = await startServer();
+  try {
+    const prefix = join(root, "prefix", "bin"), config = join(root, "config"), shim = join(root, "shim");
+    mkdirSync(prefix, { recursive: true }); mkdirSync(config, { recursive: true }); mkdirSync(shim, { recursive: true });
+    for (const [path, value] of [[join(prefix, "wt"), "old binary\n"], [join(config, "wt.sh"), "old shell\n"], [join(config, "wt.fish"), "old fish\n"], [join(config, "install.json"), "old metadata\n"]] as const) writeFileSync(path, value);
+    const mv = join(shim, "mv");
+    writeFileSync(mv, "#!/usr/bin/env bash\ncase \"$1\" in\n  *.wt-stage.wt.fish.*) exit 73 ;;;\n  *) exec /bin/mv \"$@\" ;;;\nesac\n");
+    chmodSync(mv, 0o755);
+    const result = invoke(bootstrap(root), root, server.baseUrl, { PATH: shim + ":" + process.env.PATH, PREFIX: join(root, "prefix"), WT_CONFIG_DIR: config });
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(join(prefix, "wt"), "utf8"), "old binary\n");
+    assert.equal(readFileSync(join(config, "wt.sh"), "utf8"), "old shell\n");
+    assert.equal(readFileSync(join(config, "wt.fish"), "utf8"), "old fish\n");
+    assert.equal(readFileSync(join(config, "install.json"), "utf8"), "old metadata\n");
+    assert.match(result.stderr, /atomically/);
+  } finally {
+    await server.stop();
+    remove(root);
+  }
+});
+
+test("installer rejects malicious API and asset redirects, accepts the constrained CDN fixture, and enforces the redirect limit", async () => {
+  for (const scenario of ["api-redirect-bad", "asset-redirect-bad", "redirect-loop"]) {
+    const root = temporaryRoot(), server = await startServer(scenario);
+    try {
+      const result = invoke(bootstrap(root), root, server.baseUrl);
+      assert.notEqual(result.status, 0, scenario);
+      assert.equal(existsSync(join(root, "prefix", "bin", "wt")), false);
+    } finally {
+      await server.stop();
+      remove(root);
+    }
+  }
+  const root = temporaryRoot(), server = await startServer("cdn");
+  try {
+    const result = invoke(bootstrap(root), root, server.baseUrl);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(spawnSync(join(root, "prefix", "bin", "wt"), ["--version"], { encoding: "utf8" }).stdout.trim(), "0.3.2");
+  } finally {
+    await server.stop();
+    remove(root);
+  }
+});
+
+test("installer smoke-tests the installed executable and preserves files when startup fails", async () => {
+  const root = temporaryRoot(), server = await startServer("smoke-failure");
+  try {
+    const result = invoke(bootstrap(root), root, server.baseUrl);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /version\/help smoke/);
+    assert.equal(existsSync(join(root, "prefix", "bin", "wt")), false);
+    assert.equal(existsSync(join(root, "config", "install.json")), false);
+  } finally {
+    await server.stop();
+    remove(root);
+  }
+});
+
 test("installer supports newer exact-tag fixtures and idempotent shell profile blocks", async () => {
   const root = temporaryRoot(), server = await startServer("newer");
   try {
@@ -133,6 +194,33 @@ test("installer supports newer exact-tag fixtures and idempotent shell profile b
       assert.equal((readFileSync(profile, "utf8").match(/# wt-managed: BEGIN/g) ?? []).length, 1);
     }
     assert.equal(JSON.parse(readFileSync(join(root, "config", "install.json"), "utf8")).tag, "v0.3.3");
+  } finally {
+    await server.stop();
+    remove(root);
+  }
+});
+
+test("installer preserves malformed profile content and escapes hostile installation paths", async () => {
+  const root = temporaryRoot(), server = await startServer();
+  try {
+    const home = join(root, "home");
+    mkdirSync(home, { recursive: true });
+    const originalBash = "before\n# wt-managed: BEGIN\nuser content must remain\n";
+    writeFileSync(join(home, ".bashrc"), originalBash);
+    const sentinel = join(root, "sentinel");
+    const hostileConfig = join(root, "config with ' quote \\ slash $(touch " + sentinel + ") spaces");
+    const hostilePrefix = join(root, "prefix \" double \\ slash $(touch " + sentinel + "-prefix) spaces");
+    const result = invoke(bootstrap(root), root, server.baseUrl, { HOME: home, PREFIX: hostilePrefix, WT_CONFIG_DIR: hostileConfig });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(join(home, ".bashrc"), "utf8"), originalBash);
+    const zsh = readFileSync(join(home, ".zshrc"), "utf8");
+    assert.equal(spawnSync("zsh", ["-n", join(home, ".zshrc")]).status, 0);
+    assert.match(zsh, /source '/);
+    assert.match(result.stdout, /Immediate use:\s+'[^\n]*\$\(touch/);
+    assert.match(result.stdout, /PATH:\s+add '[^\n]*\$\(touch/);
+    assert.match(result.stdout, /Future Fish:\s+managed wrapper block was added to '[^\n]*'/);
+    assert.equal(existsSync(sentinel), false);
+    assert.equal(existsSync(sentinel + "-prefix"), false);
   } finally {
     await server.stop();
     remove(root);

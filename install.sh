@@ -36,9 +36,74 @@ node_version="$(node -p 'process.versions.node' 2>/dev/null || true)"
 (( BASH_REMATCH[1] >= 18 )) || fail "Node.js $node_version found; wt requires Node.js 18 or newer. Install a supported Node.js release and rerun this installer."
 command -v git >/dev/null 2>&1 && git --version >/dev/null 2>&1 || fail "Git is required. Install Git with Xcode Command Line Tools on macOS or your Linux package manager, then rerun this installer."
 
-fetch_to() {
-  if [[ "$downloader" == curl ]]; then curl -fsSL "$1" -o "$2"
-  else wget -qO "$2" "$1"; fi
+umask 077
+temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/wt-install.XXXXXX")" || fail "could not create a private temporary directory."
+trap 'rm -rf "$temporary_directory"' EXIT
+
+download_with_redirects() {
+  node - "$1" "$2" "$3" <<'NODE'
+const http = require("node:http");
+const https = require("node:https");
+const { unlinkSync, writeFileSync } = require("node:fs");
+
+const [startUrl, destination, kind] = process.argv.slice(2);
+const maxBytes = kind === "api" ? 1024 * 1024 : 10 * 1024 * 1024;
+const cdnHosts = new Set(["objects.githubusercontent.com", "release-assets.githubusercontent.com", "github-releases.githubusercontent.com"]);
+const initial = new URL(startUrl);
+const isHttp = (url) => url.protocol === "http:" || url.protocol === "https:";
+if (!isHttp(initial) || initial.username || initial.password || initial.hash) throw new Error("download URL is not a safe HTTP(S) URL");
+if (kind === "api" && initial.hostname === "api.github.com" && initial.pathname !== "/repos/absolutepraya/wt/releases/latest") throw new Error("API URL is outside the expected wt release endpoint");
+if (kind === "asset" && initial.hostname === "github.com" && !/^\/absolutepraya\/wt\/releases\/download\/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\/(?:wt|wt\.sh|wt\.fish|checksums\.txt)$/.test(initial.pathname)) throw new Error("asset URL is outside the expected wt release path");
+const sameReleaseUrl = (url) => url.protocol === initial.protocol && url.hostname === initial.hostname && url.port === initial.port && url.pathname === initial.pathname && url.search === initial.search;
+const approvedCdnUrl = (url) => {
+  const fixtureCdn = ["127.0.0.1", "localhost"].includes(initial.hostname) && url.protocol === initial.protocol && url.hostname === initial.hostname && url.port === initial.port;
+  const officialCdn = url.protocol === "https:" && !url.port && cdnHosts.has(url.hostname);
+  return (fixtureCdn || officialCdn) && url.pathname.startsWith("/github-production-release-asset/") && Boolean(url.searchParams.get("sig"));
+};
+function validateRedirect(url) {
+  if (!isHttp(url) || url.username || url.password || url.hash) throw new Error("redirect has unsafe URL components");
+  if (kind === "api") {
+    if (!sameReleaseUrl(url)) throw new Error("API redirect left the expected release endpoint");
+  } else if (!sameReleaseUrl(url) && !approvedCdnUrl(url)) {
+    throw new Error("asset redirect left the expected release or approved CDN host");
+  }
+}
+function request(url, redirectCount) {
+  if (redirectCount > 5) return Promise.reject(new Error("redirect limit exceeded"));
+  const client = url.protocol === "https:" ? https : http;
+  return new Promise((resolve, reject) => {
+    const pending = client.get(url, { headers: { "User-Agent": "wt-installer" } }, (response) => {
+      if (response.statusCode >= 300 && response.statusCode < 400) {
+        const location = response.headers.location;
+        response.resume();
+        if (!location) { reject(new Error("redirect has no location")); return; }
+        let next;
+        try { next = new URL(location, url); validateRedirect(next); } catch (error) { reject(error); return; }
+        request(next, redirectCount + 1).then(resolve, reject);
+        return;
+      }
+      if (response.statusCode < 200 || response.statusCode >= 300) { response.resume(); reject(new Error("HTTP " + response.statusCode)); return; }
+      const chunks = [];
+      let length = 0;
+      response.on("data", (chunk) => {
+        length += chunk.length;
+        if (length > maxBytes) { response.destroy(new Error("response exceeds safety limit")); return; }
+        chunks.push(chunk);
+      });
+      response.on("error", reject);
+      response.on("end", () => resolve(Buffer.concat(chunks)));
+    });
+    pending.on("error", reject);
+  });
+}
+request(initial, 0).then((contents) => {
+  writeFileSync(destination, contents, { flag: "wx", mode: 0o600 });
+}, (error) => {
+  try { unlinkSync(destination); } catch {}
+  process.stderr.write("wt installer: " + (error instanceof Error ? error.message : "download failed") + "\n");
+  process.exitCode = 1;
+});
+NODE
 }
 
 if [[ "$local_source" == 1 ]]; then
@@ -46,32 +111,34 @@ if [[ "$local_source" == 1 ]]; then
   [[ "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "local package version is not a stable X.Y.Z version."
   release_tag="v$release_version"
 else
+  download_with_redirects "$WT_RELEASE_API_URL" "$temporary_directory/release.json" api || fail "could not fetch a stable wt release from $WT_RELEASE_API_URL."
   release_tag="$(
-    if [[ "$downloader" == curl ]]; then curl -fsSL "$WT_RELEASE_API_URL"; else wget -qO- "$WT_RELEASE_API_URL"; fi |
-      node -e '
-        let input = ""; process.stdin.setEncoding("utf8");
-        process.stdin.on("data", part => input += part);
-        process.stdin.on("end", () => {
-          let payload; try { payload = JSON.parse(input); } catch { process.exit(2); }
-          const all = Array.isArray(payload) ? payload : [payload];
-          const stable = all.filter(item => item && typeof item === "object" && item.draft === false && item.prerelease === false && typeof item.tag_name === "string")
-            .map(item => ({ tag: item.tag_name, parts: /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(item.tag_name) }))
-            .filter(item => item.parts)
-            .sort((a,b) => Number(b.parts[1])-Number(a.parts[1]) || Number(b.parts[2])-Number(a.parts[2]) || Number(b.parts[3])-Number(a.parts[3]));
-          if (!stable[0]) process.exit(3);
-          process.stdout.write(stable[0].tag);
-        });
-      '
+    node - "$temporary_directory/release.json" "$WT_RELEASE_DOWNLOAD_BASE_URL" <<'NODE'
+const { readFileSync } = require("node:fs");
+const [file, base] = process.argv.slice(2);
+const payload = JSON.parse(readFileSync(file, "utf8"));
+const releases = Array.isArray(payload) ? payload : [payload];
+const required = new Set(["wt", "wt.sh", "wt.fish", "checksums.txt"]);
+const stable = releases
+  .filter((item) => item && typeof item === "object" && item.draft === false && item.prerelease === false && typeof item.tag_name === "string")
+  .map((item) => ({ item, tag: item.tag_name, parts: /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(item.tag_name) }))
+  .filter((item) => item.parts)
+  .sort((a, b) => Number(b.parts[1]) - Number(a.parts[1]) || Number(b.parts[2]) - Number(a.parts[2]) || Number(b.parts[3]) - Number(a.parts[3]));
+if (!stable[0] || !Array.isArray(stable[0].item.assets)) process.exit(2);
+const assets = stable[0].item.assets;
+const baseUrl = new URL(base.endsWith("/") ? base.slice(0, -1) : base);
+for (const name of required) {
+  const matches = assets.filter((asset) => asset && asset.name === name);
+  if (matches.length !== 1 || typeof matches[0].browser_download_url !== "string") process.exit(3);
+  const expected = new URL(baseUrl.href + "/" + stable[0].tag + "/" + name);
+  if (matches[0].browser_download_url !== expected.href) process.exit(4);
+}
+process.stdout.write(stable[0].tag);
+NODE
   )" || fail "could not resolve a stable wt release from $WT_RELEASE_API_URL."
   [[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "release API did not return a stable vX.Y.Z tag."
   release_version="${release_tag#v}"
 fi
-
-# All prerequisites and release selection are complete before final directories,
-# files, or profiles are changed.
-umask 077
-temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/wt-install.XXXXXX")" || fail "could not create a private temporary directory."
-trap 'rm -rf "$temporary_directory"' EXIT
 
 for asset in wt wt.sh wt.fish checksums.txt; do
   target="$temporary_directory/$asset"
@@ -92,7 +159,7 @@ NODE
         ;;
     esac
   else
-    fetch_to "${WT_RELEASE_DOWNLOAD_BASE_URL%/}/$release_tag/$asset" "$target" || fail "could not download $asset for $release_tag."
+    download_with_redirects "${WT_RELEASE_DOWNLOAD_BASE_URL%/}/$release_tag/$asset" "$target" asset || fail "could not download $asset for $release_tag."
   fi
 done
 
@@ -130,35 +197,90 @@ const metadata = { channel: "standalone", binary, shell_wrapper: shell, fish_wra
 writeFileSync(file, JSON.stringify(metadata, null, 2) + "\n", { mode: 0o600 });
 NODE
 
-stages=(); backups=(); installed=()
-rollback() {
+stages=(); backups=(); installed=(); rollback_failed=0
+remove_stages() {
   local i
-  for ((i=${#destinations[@]}-1; i>=0; i--)); do
-    [[ "${installed[i]:-0}" == 1 && -e "${destinations[i]}" ]] && rm -f "${destinations[i]}" || true
-    [[ -n "${backups[i]:-}" && -e "${backups[i]}" ]] && mv "${backups[i]}" "${destinations[i]}" || true
+  for i in "${!stages[@]}"; do
     [[ -n "${stages[i]:-}" && -e "${stages[i]}" ]] && rm -f "${stages[i]}" || true
   done
 }
-for i in "${!destinations[@]}"; do
-  stage="$(mktemp "$(dirname "${destinations[i]}")/.wt-stage.$(basename "${destinations[i]}").XXXXXX")"
-  cp "${sources[i]}" "$stage"
-  [[ "$i" == 0 ]] && chmod 0755 "$stage" || chmod 0644 "$stage"
-  stages[i]="$stage"
-done
-if ! {
+rollback() {
+  local i
+  rollback_failed=0
+  for ((i=${#destinations[@]}-1; i>=0; i--)); do
+    if [[ "${installed[i]:-0}" == 1 && -e "${destinations[i]}" ]]; then
+      if ! rm -f "${destinations[i]}"; then rollback_failed=1; fi
+    fi
+    if [[ -n "${backups[i]:-}" && -e "${backups[i]}" ]]; then
+      if [[ -e "${destinations[i]}" ]]; then
+        rollback_failed=1
+      elif ! mv "${backups[i]}" "${destinations[i]}"; then
+        rollback_failed=1
+      fi
+    fi
+  done
+  remove_stages
+  return "$rollback_failed"
+}
+install_files() {
+  local i stage backup
+  stages=(); backups=(); installed=(); rollback_failed=0
+  for i in "${!destinations[@]}"; do
+    if ! stage="$(mktemp "$(dirname "${destinations[i]}")/.wt-stage.$(basename "${destinations[i]}").XXXXXX")"; then
+      remove_stages
+      return 1
+    fi
+    if ! cp "${sources[i]}" "$stage"; then
+      rm -f "$stage" || true
+      remove_stages
+      return 1
+    fi
+    if [[ "$i" == 0 ]]; then
+      if ! chmod 0755 "$stage"; then
+        remove_stages
+        return 1
+      fi
+    elif ! chmod 0644 "$stage"; then
+      remove_stages
+      return 1
+    fi
+    stages[i]="$stage"
+  done
   for i in "${!destinations[@]}"; do
     if [[ -e "${destinations[i]}" ]]; then
-      backups[i]="$(dirname "${destinations[i]}")/.wt-backup.$(basename "${destinations[i]}").$$.$i"
-      mv "${destinations[i]}" "${backups[i]}"
+      backup="$(dirname "${destinations[i]}")/.wt-backup.$(basename "${destinations[i]}").$$.$i"
+      if ! mv "${destinations[i]}" "$backup"; then
+        rollback
+        return 1
+      fi
+      backups[i]="$backup"
     fi
-    mv "${stages[i]}" "${destinations[i]}"
-    stages[i]=""; installed[i]=1
+    if ! mv "${stages[i]}" "${destinations[i]}"; then
+      rollback
+      return 1
+    fi
+    stages[i]=""
+    installed[i]=1
   done
-}; then
-  rollback
+}
+if ! install_files; then
+  if (( rollback_failed )); then
+    fail "could not install release files atomically; rollback artifacts were retained for recovery."
+  fi
   fail "could not install release files atomically; the previous installation was restored."
 fi
-for backup in "${backups[@]:-}"; do [[ -z "$backup" || ! -e "$backup" ]] || rm -f "$backup"; done
+
+binary="${destinations[0]}"
+if ! "$binary" --version >/dev/null 2>&1 || ! "$binary" --help >/dev/null 2>&1; then
+  rollback
+  if (( rollback_failed )); then
+    fail "installed wt failed its version/help smoke; rollback artifacts were retained for recovery."
+  fi
+  fail "installed wt failed its version/help smoke; the previous installation was restored."
+fi
+for backup in "${backups[@]:-}"; do
+  [[ -z "$backup" || ! -e "$backup" ]] || rm -f "$backup" || echo "wt installer: warning: could not remove rollback artifact $backup" >&2
+done
 
 managed_block() {
   local profile="$1" body="$2"
@@ -169,28 +291,59 @@ const { basename, dirname, join } = require("node:path");
 const [profile, body] = process.argv.slice(2);
 const begin = "# wt-managed: BEGIN", end = "# wt-managed: END", block = begin + "\n" + body + "\n" + end + "\n";
 const text = existsSync(profile) ? readFileSync(profile, "utf8") : "";
-const start = text.indexOf(begin), finish = start < 0 ? -1 : text.indexOf(end, start);
-const next = start < 0 ? text + (text && !text.endsWith("\n") ? "\n" : "") + "\n" + block : text.slice(0, start) + block + text.slice(finish < 0 ? text.length : finish + end.length).replace(/^\n/, "");
+const beginMatches = [...text.matchAll(/^# wt-managed: BEGIN$/gm)];
+const endMatches = [...text.matchAll(/^# wt-managed: END$/gm)];
+if (beginMatches.length === 0 && endMatches.length === 0) {
+  const next = text + (text && !text.endsWith("\n") ? "\n" : "") + "\n" + block;
+  const temporary = join(dirname(profile), "." + basename(profile) + ".wt-managed-" + process.pid);
+  writeFileSync(temporary, next, { mode: 0o600 }); renameSync(temporary, profile);
+  process.exit(0);
+}
+if (beginMatches.length !== 1 || endMatches.length !== 1 || beginMatches[0].index > endMatches[0].index) {
+  process.stderr.write("wt installer: malformed managed block in " + profile + "\n");
+  process.exit(1);
+}
+const start = beginMatches[0].index, finish = endMatches[0].index;
+const next = text.slice(0, start) + block + text.slice(finish + end.length).replace(/^\n/, "");
 const temporary = join(dirname(profile), "." + basename(profile) + ".wt-managed-" + process.pid);
 writeFileSync(temporary, next, { mode: 0o600 }); renameSync(temporary, profile);
 NODE
 }
 
+quote_path() {
+  node - "$1" "$2" <<'NODE'
+const [style, value] = process.argv.slice(2);
+if (style === "posix") {
+  process.stdout.write("'" + value.split("'").join("'\\'" + "'") + "'");
+} else if (style === "fish") {
+  process.stdout.write("'" + value.split("\\").join("\\\\").split("'").join("\\'") + "'");
+} else {
+  process.exit(1);
+}
+NODE
+}
+
 # npm does not call this installer. This installer never edits a PowerShell profile.
-shell_wrapper="${destinations[1]}"
-if ! managed_block "$HOME/.bashrc" "[ -f \"$shell_wrapper\" ] && source \"$shell_wrapper\""; then echo "wt installer: warning: could not update $HOME/.bashrc" >&2; fi
-if ! managed_block "$HOME/.zshrc" "[ -f \"$shell_wrapper\" ] && source \"$shell_wrapper\""; then echo "wt installer: warning: could not update $HOME/.zshrc" >&2; fi
 fish_root="${XDG_CONFIG_HOME:-${HOME}/.config}"
-if ! managed_block "$fish_root/fish/conf.d/wt.fish" "source \"${destinations[2]}\""; then echo "wt installer: warning: could not update Fish integration" >&2; fi
+fish_profile="$fish_root/fish/conf.d/wt.fish"
+posix_wrapper="$(quote_path posix "${destinations[1]}")"
+fish_wrapper="$(quote_path fish "${destinations[2]}")"
+posix_binary="$(quote_path posix "${destinations[0]}")"
+fish_binary="$(quote_path fish "${destinations[0]}")"
+posix_bin_directory="$(quote_path posix "$bin_directory")"
+posix_fish_profile="$(quote_path posix "$fish_profile")"
+if ! managed_block "$HOME/.bashrc" "[ -f $posix_wrapper ] && source $posix_wrapper"; then echo "wt installer: warning: could not update $HOME/.bashrc" >&2; fi
+if ! managed_block "$HOME/.zshrc" "[ -f $posix_wrapper ] && source $posix_wrapper"; then echo "wt installer: warning: could not update $HOME/.zshrc" >&2; fi
+if ! managed_block "$fish_profile" "source $fish_wrapper"; then echo "wt installer: warning: could not update Fish integration" >&2; fi
 
 cat <<EOF
 
 wt installed from $WT_REPOSITORY $release_tag.
 
-Immediate use:       ${destinations[0]} --version
-PATH:                add $bin_directory to PATH, then open a new shell if needed.
+Immediate use:       $posix_binary --version
+PATH:                add $posix_bin_directory to PATH, then open a new shell if needed.
 Future Bash/Zsh:     managed wrapper blocks were added to ~/.bashrc and ~/.zshrc.
-Future Fish:         managed wrapper block was added to $fish_root/fish/conf.d/wt.fish.
-Current shell cd:    eval "\$(wt shell-init bash)" (or "wt shell-init fish | source" in Fish).
+Future Fish:         managed wrapper block was added to $posix_fish_profile.
+Current shell cd:    after PATH setup, eval "\$($posix_binary shell-init bash)" (or "$fish_binary shell-init fish | source" in Fish).
 PowerShell:          add 'Invoke-Expression (& wt shell-init powershell)' to your profile yourself; this installer never edits it.
 EOF
