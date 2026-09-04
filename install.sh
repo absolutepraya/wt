@@ -290,17 +290,26 @@ managed_block() {
   local profile="$1" body="$2"
   mkdir -p "$(dirname "$profile")"
   node - "$profile" "$body" <<'NODE'
-const { existsSync, readFileSync, renameSync, writeFileSync } = require("node:fs");
+const { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require("node:fs");
 const { basename, dirname, join } = require("node:path");
 const [profile, body] = process.argv.slice(2);
 const begin = "# wt-managed: BEGIN", end = "# wt-managed: END", block = begin + "\n" + body + "\n" + end + "\n";
 const text = existsSync(profile) ? readFileSync(profile, "utf8") : "";
+function replaceProfile(next) {
+  const stagingDirectory = mkdtempSync(join(dirname(profile), "." + basename(profile) + ".wt-managed-"));
+  const temporary = join(stagingDirectory, "profile");
+  try {
+    writeFileSync(temporary, next, { flag: "wx", mode: 0o600 });
+    renameSync(temporary, profile);
+  } finally {
+    rmSync(stagingDirectory, { recursive: true, force: true });
+  }
+}
 const beginMatches = [...text.matchAll(/^# wt-managed: BEGIN$/gm)];
 const endMatches = [...text.matchAll(/^# wt-managed: END$/gm)];
 if (beginMatches.length === 0 && endMatches.length === 0) {
   const next = text + (text && !text.endsWith("\n") ? "\n" : "") + "\n" + block;
-  const temporary = join(dirname(profile), "." + basename(profile) + ".wt-managed-" + process.pid);
-  writeFileSync(temporary, next, { mode: 0o600 }); renameSync(temporary, profile);
+  replaceProfile(next);
   process.exit(0);
 }
 if (beginMatches.length !== 1 || endMatches.length !== 1 || beginMatches[0].index > endMatches[0].index) {
@@ -309,8 +318,7 @@ if (beginMatches.length !== 1 || endMatches.length !== 1 || beginMatches[0].inde
 }
 const start = beginMatches[0].index, finish = endMatches[0].index;
 const next = text.slice(0, start) + block + text.slice(finish + end.length).replace(/^\n/, "");
-const temporary = join(dirname(profile), "." + basename(profile) + ".wt-managed-" + process.pid);
-writeFileSync(temporary, next, { mode: 0o600 }); renameSync(temporary, profile);
+replaceProfile(next);
 NODE
 }
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
@@ -82,6 +82,31 @@ test("new creates a tracked worktree and setup failure rolls Git and state back"
   assert.equal(listWorktrees(systemGitRunner, repository.repo).some((entry) => entry.path.endsWith("/.worktrees/broken")), false);
   assert.deepEqual((await loadState(statePath(repository))).slots, {});
   assert.equal(systemGitRunner.run(["show-ref", "--verify", "--quiet", "refs/heads/test/broken"], repository.repo).status, 1);
+});
+
+test("new preserves a target that appears during a failed worktree creation", async () => {
+  const repository = makeRepository();
+  const target = join(repository.repo, ".worktrees", "creation-race");
+  const marker = join(target, "unrelated.txt");
+  let removeAttempted = false;
+  const git = {
+    run(args: string[], cwd: string) {
+      if (args[0] === "worktree" && args[1] === "add") {
+        mkdirSync(target, { recursive: true });
+        writeFileSync(marker, "unrelated directory\n");
+        return { status: 1, stdout: "", stderr: "simulated creation failure" };
+      }
+      if (args[0] === "worktree" && args[1] === "remove") removeAttempted = true;
+      return systemGitRunner.run(args, cwd);
+    },
+  };
+  await assert.rejects(
+    runNew(context(repository), { name: "creation-race", noSetup: true, cdAfterCreate: false }, { git, now: () => new Date("2026-09-05T00:00:00.000Z"), random: () => 0.1 }),
+    /simulated creation failure/,
+  );
+  assert.equal(removeAttempted, false);
+  assert.equal(readFileSync(marker, "utf8"), "unrelated directory\n");
+  assert.deepEqual((await loadState(statePath(repository))).slots, {});
 });
 
 test("setup rollback leaves a replacement created while setup was running", async () => {

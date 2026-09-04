@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, relative, resolve } from "node:path";
 import { loadConfig } from "../config.js";
@@ -120,8 +120,11 @@ export async function runNew(
     } catch (error) {
       // We already own the project lock. Do not call rollbackWorktree here,
       // because it deliberately reacquires that lock before changing state.
-      try { removeWorktree(services.git, root, worktreePath, true); }
-      catch { if (existsSync(worktreePath)) rmSync(worktreePath, { recursive: true, force: true }); }
+      // A successful add is the ownership proof. If add failed, the target
+      // may have appeared concurrently and must be left untouched.
+      if (worktreeCreated) {
+        try { removeWorktree(services.git, root, worktreePath, true); } catch { /* Preserve the create failure. */ }
+      }
       services.git.run(["worktree", "prune"], root);
       if (worktreeCreated) {
         try { deleteBranch(services.git, root, branch, true); } catch { /* Preserve the create failure. */ }

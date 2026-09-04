@@ -88,3 +88,33 @@ All required local commands passed:
   remain in the package README are explicitly historical migration prose.
 - Native Windows and hosted macOS/Windows CI were not available in the local
   environment; CI remains the cross-platform gate.
+
+## Final review fix wave
+
+- `src/commands/new.ts` now treats a successful `addWorktree` return as the
+  ownership proof. Failed creation attempts do not invoke worktree removal or
+  recursively delete the target, preserving a directory that appeared during
+  the race while rethrowing the original Git failure. Successful creation still
+  uses registered Git removal during safe state-write rollback.
+- `install.sh` now creates a randomized sibling staging directory with
+  `mkdtempSync`, writes the profile with exclusive `wx`, renames it atomically,
+  and cleans only that staging directory. Existing malformed-marker
+  preservation and shell escaping remain covered.
+- Added a deterministic failed-creation target race regression and a focused
+  pre-created PID-based symlink collision regression for profile staging.
+
+### Final-fix checks
+
+- `npx tsx --test test/commands.test.ts test/installer.test.ts`: 24 passed.
+- `npm run typecheck`: passed.
+- `npm run check`: passed typecheck, build, and bundled artifact syntax check.
+- `npm test`: 98 total, 96 passed, 2 expected Windows skips, 0 failed.
+- `bash -n install.sh`: passed.
+- `bash scripts/check-installer.sh`: passed.
+- `git diff --check`: passed.
+
+### Final-fix limitations
+
+- Native Windows execution and hosted cross-platform CI were not available
+  locally; the two existing Windows-only lock tests remain skipped.
+- No remote, publish, merge, or push operations were performed.

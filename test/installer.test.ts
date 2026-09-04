@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -209,6 +209,39 @@ test("installer supports newer exact-tag fixtures and idempotent shell profile b
       assert.equal((readFileSync(profile, "utf8").match(/# wt-managed: BEGIN/g) ?? []).length, 1);
     }
     assert.equal(JSON.parse(readFileSync(join(root, "config", "install.json"), "utf8")).tag, "v0.3.3");
+  } finally {
+    await server.stop();
+    remove(root);
+  }
+});
+
+test("installer isolates profile staging from a predictable symlink collision", async () => {
+  const root = temporaryRoot(), server = await startServer();
+  try {
+    const home = join(root, "home"), shim = join(root, "shim"), profile = join(home, ".bashrc"), sentinel = join(root, "profile-sentinel"), collisionPath = join(root, "collision-path");
+    mkdirSync(home, { recursive: true }); mkdirSync(shim, { recursive: true });
+    writeFileSync(sentinel, "keep this file\n");
+    const nodeShim = join(shim, "node");
+    writeFileSync(nodeShim, `#!/usr/bin/env bash
+if [[ "$1" == "-" && "$2" == "$WT_COLLISION_PROFILE" ]]; then
+  collision_path="$(dirname "$2")/.$(basename "$2").wt-managed-$$"
+  ln -s "$WT_COLLISION_TARGET" "$collision_path"
+  printf '%s' "$collision_path" > "$WT_COLLISION_PATH_FILE"
+fi
+exec "${process.execPath}" "$@"
+`);
+    chmodSync(nodeShim, 0o755);
+    const result = invoke(bootstrap(root), root, server.baseUrl, {
+      HOME: home,
+      PATH: shim + ":" + process.env.PATH,
+      WT_COLLISION_PROFILE: profile,
+      WT_COLLISION_TARGET: sentinel,
+      WT_COLLISION_PATH_FILE: collisionPath,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(sentinel, "utf8"), "keep this file\n");
+    assert.equal(lstatSync(readFileSync(collisionPath, "utf8")).isSymbolicLink(), true);
+    assert.match(readFileSync(profile, "utf8"), /# wt-managed: BEGIN/);
   } finally {
     await server.stop();
     remove(root);
