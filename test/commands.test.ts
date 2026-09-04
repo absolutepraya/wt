@@ -112,6 +112,35 @@ test("setup rollback leaves a replacement created while setup was running", asyn
   assert.equal(systemGitRunner.run(["show-ref", "--verify", "--quiet", "refs/heads/test/setup-race"], repository.repo).status, 0);
 });
 
+test("setup failure does not run teardown against a replacement", async () => {
+  const repository = makeRepository();
+  const started = join(repository.home, "setup-teardown-race-started");
+  const release = join(repository.home, "setup-teardown-race-release");
+  const marker = join(repository.home, "replacement-teardown-marker");
+  const setupCode = "const fs=require('node:fs');const started=process.env.WT_RACE_STARTED;const release=process.env.WT_RACE_RELEASE;fs.writeFileSync(started,'1');while(!fs.existsSync(release))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20);process.exit(7)";
+  const teardownCode = "const fs=require('node:fs');const path=require('node:path');const marker=process.env.WT_SETUP_TEARDOWN_MARKER;if(marker){fs.writeFileSync(marker,'teardown ran');fs.writeFileSync(path.join(process.env.WT_WORKSPACE_PATH,'replacement-was-torn-down'),'1')}";
+  writeConfig(repository.repo, `setup = [${JSON.stringify(`node -e ${JSON.stringify(setupCode)}`)}]\nteardown = [${JSON.stringify(`node -e ${JSON.stringify(teardownCode)}`)}]`);
+  const environment = { WT_RACE_STARTED: started, WT_RACE_RELEASE: release, WT_SETUP_TEARDOWN_MARKER: marker };
+  const failedSetup = runCliProcess(repository, "new", "setup-teardown-race", environment, { noSetup: false });
+  let failedResult: CliProcessResult;
+  try {
+    await waitForFile(started);
+    const removed = await runCliProcess(repository, "rm", "setup-teardown-race", {});
+    assert.equal(removed.code, 0);
+    const replacement = await runCliProcess(repository, "new", "setup-teardown-race", {});
+    assert.equal(replacement.code, 0);
+  } finally {
+    writeFileSync(release, "1");
+    failedResult = await failedSetup;
+  }
+  assert.equal(failedResult.code, 2);
+  assert.match(failedResult.stderr, /setup rollback conflict/);
+  assert.equal(existsSync(marker), false);
+  assert.equal(existsSync(join(repository.repo, ".worktrees", "setup-teardown-race", "replacement-was-torn-down")), false);
+  assert.equal(listWorktrees(systemGitRunner, repository.repo).some((entry) => entry.path.endsWith("/.worktrees/setup-teardown-race")), true);
+  assert.equal(systemGitRunner.run(["show-ref", "--verify", "--quiet", "refs/heads/test/setup-teardown-race"], repository.repo).status, 0);
+});
+
 test("ordinary new refuses to reset an existing unchecked-out local branch", async () => {
   const repository = makeRepository();
   runGit(["checkout", "-b", "existing"], repository.repo);

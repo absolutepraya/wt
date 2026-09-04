@@ -135,9 +135,9 @@ export async function runNew(
     const env = setupEnvironment(result.root, result.name, result.path, context.env, { branch: result.branch, slot: result.slot, portOffsetInterval: result.portOffsetInterval });
     try { runScripts(config.setup, result.path, env, context.io, "setup"); }
     catch (error) {
-      if (config.teardown.length > 0) {
-        try { runScripts(config.teardown, result.path, env, context.io, "teardown"); } catch { /* Setup failure remains primary. */ }
-      }
+      // Do not run teardown here. Setup is outside the project lock, so the
+      // path may already belong to a replacement by the time setup fails.
+      // rollbackWorktree validates ownership under the lock before cleanup.
       try { await rollbackWorktree(services, result.root, result.path, result.branch, result.statePath, true, result.generationToken); }
       catch (rollback) { writeOutput(context.io.stderr, `wt: warning: setup rollback needs attention: ${rollback instanceof Error ? rollback.message : String(rollback)}`); }
       throw error;
