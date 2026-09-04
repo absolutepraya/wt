@@ -5,7 +5,7 @@ import { UsageError } from "../src/errors.js";
 import { renderCdOutput, renderSection, writeOutput } from "../src/output.js";
 
 test("human section retains command information", () => {
-  const output = renderSection("Created worktree: adelaide", { branch: "abhip/adelaide", slot: 1 }, { width: 12, trailingDivider: true });
+  const output = renderSection("Created worktree: adelaide", { branch: "abhip/adelaide", slot: 1 }, 12);
   assert.match(output, /Created worktree: adelaide/);
   assert.match(output, /branch  abhip\/adelaide/);
   assert.equal(output.split("\n")[0], "═".repeat(12));
@@ -14,9 +14,9 @@ test("human section retains command information", () => {
 
 test("supports open sections before setup and closed final sections", () => {
   const open = renderSection("Creating worktree", { name: "adelaide" }, { width: 12, trailingDivider: false });
-  const closed = renderSection("Created worktree: adelaide", { name: "adelaide" }, { width: 12, trailingDivider: true });
+  const closed = renderSection("Created worktree: adelaide", { name: "adelaide" });
   assert.notEqual(open.split("\n").at(-1), "═".repeat(12));
-  assert.equal(closed.split("\n").at(-1), "═".repeat(12));
+  assert.equal(closed.split("\n").at(-1), "═".repeat(80));
 });
 
 test("rejects control characters in labels, values, and paths", () => {

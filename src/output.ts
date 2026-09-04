@@ -23,7 +23,7 @@ export function renderSection(title: string, fields: OutputFields = {}, options:
     assertSafeOutputText(String(value), `output value for ${JSON.stringify(key)}`);
   }
   const width = typeof options === "number" ? options : options.width ?? 80;
-  const trailingDivider = typeof options === "number" ? false : options.trailingDivider ?? false;
+  const trailingDivider = typeof options === "number" ? true : options.trailingDivider ?? true;
   const divider = "═".repeat(Math.max(1, width));
   const keys = Object.keys(fields);
   const keyWidth = Math.max(0, ...keys.map((key) => key.length));
