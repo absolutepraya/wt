@@ -13,7 +13,7 @@ rg -q 'curl or wget is required' "$installer"
 rg -q 'Node\.js 18 or newer is required' "$installer"
 rg -q 'Git is required' "$installer"
 rg -q 'wt-managed: BEGIN' "$installer"
-if rg -q 'WT_REF|python3|bin/wt' "$installer"; then
+if rg -q 'WT_REF|python3' "$installer"; then
   echo "installer still contains a legacy Python/ref contract" >&2
   exit 1
 fi

@@ -1,8 +1,3 @@
-__pycache__/
-*.pyc
-.pytest_cache/
-.venv/
-venv/
 .worktrees/
 .DS_Store
 CONTEXT.md
