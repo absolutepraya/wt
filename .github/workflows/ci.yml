@@ -11,47 +11,13 @@ permissions:
 
 jobs:
   test:
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        python: ["3.11", "3.12", "3.13"]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-
-      - name: Install pytest
-        run: pip install pytest
-
-      - name: Configure git
-        # Pytest fixtures create real git repos; git needs an identity.
-        run: |
-          git config --global user.email "ci@example.com"
-          git config --global user.name  "CI"
-          git config --global init.defaultBranch main
-
-      - name: Run tests
-        run: pytest -q tests/
-
-      - name: Syntax-check the script
-        run: python -c "import ast; ast.parse(open('bin/wt').read())"
-
-      - name: Help renders
-        run: python bin/wt --help
-
-  npm-package:
-    name: npm package smoke test (Node ${{ matrix.node }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node: ["18", "20", "22"]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ["18", "20", "22", "24"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,30 +26,47 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+          cache: npm
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      - name: Configure git
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+          git config --global init.defaultBranch main
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run Node tests
+        run: npm test
 
       - name: Check version metadata
-        run: python scripts/check-version.py
+        run: npm run check-version -- --print
 
-      - name: Check npm launcher
-        run: npm run check
-
-      - name: Validate package contents
+      - name: Validate npm package boundary
         run: npm run pack:check
 
-      - name: Pack and install in a consumer project
-        run: |
-          bash scripts/check-npm-package.sh
+      - name: Run npm package smoke checks
+        run: npm run smoke:npm
+
+      - name: Run POSIX installer tests
+        if: runner.os != 'Windows'
+        run: npx tsx --test test/installer.test.ts
+
+      - name: Run Windows command, lock, and shell-init tests
+        if: runner.os == 'Windows'
+        run: npx tsx --test test/cli.test.ts test/locking.test.ts test/shell-init.test.ts
 
   release:
     name: Publish stable release
     if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
-    needs: [test, npm-package]
+      needs.test.result == 'success' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    needs: [test]
     runs-on: ubuntu-latest
     concurrency:
       group: wt-release-main
@@ -96,149 +79,149 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
+          registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install npm trusted publishing support
-        run: npm install --global npm@11.5.1
-
-      - name: Validate release version
-        id: version
-        run: |
-          version="$(python scripts/check-version.py --print)"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::release versions must be stable X.Y.Z values, got $version"
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-
-      - name: Check existing release tag
-        id: release_state
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
+      - name: Skip main pushes without a version change
+        id: version_change
+        if: github.event_name == 'push'
+        shell: bash
         run: |
           set -euo pipefail
-          git fetch --tags --force origin
-          if git show-ref --tags --verify --quiet "refs/tags/$TAG"; then
-            tag_target="$(git rev-list -n 1 "$TAG")"
-            if [ "$tag_target" = "$GITHUB_SHA" ]; then
-              echo "action=continue" >> "$GITHUB_OUTPUT"
-              echo "tag_exists=true" >> "$GITHUB_OUTPUT"
-              echo "$TAG already points to this main commit"
-            else
-              echo "action=skip" >> "$GITHUB_OUTPUT"
-              echo "tag_exists=true" >> "$GITHUB_OUTPUT"
-              echo "::notice::$TAG is already released from $tag_target; leaving it unchanged"
-            fi
-          else
-            echo "action=continue" >> "$GITHUB_OUTPUT"
-            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
-            echo "No existing $TAG tag found"
+          previous="$(git rev-parse HEAD^ 2>/dev/null || true)"
+          changed=true
+          if [ -n "$previous" ] && git show "$previous:package.json" > "$RUNNER_TEMP/previous-package.json" 2>/dev/null; then
+            old_version="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).version)' "$RUNNER_TEMP/previous-package.json")"
+            new_version="$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).version')"
+            if [ "$old_version" = "$new_version" ]; then changed=false; fi
           fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+      - name: Stop when package version did not change
+        if: github.event_name == 'push' && steps.version_change.outputs.changed == 'false'
+        run: echo "package.json version did not change, skipping release"
 
       - name: Build release assets
         id: assets
-        if: steps.release_state.outputs.action != 'skip'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
+        if: github.event_name != 'push' || steps.version_change.outputs.changed != 'false'
+        shell: bash
         run: |
-          release_dir="$RUNNER_TEMP/wt-release"
-          mkdir -p "$release_dir"
-          cp bin/wt "$release_dir/wt"
-          cp shell/wt.sh "$release_dir/wt.sh"
-          cp shell/wt.fish "$release_dir/wt.fish"
-          chmod 755 "$release_dir/wt"
-          npm pack --pack-destination "$release_dir" >/dev/null
-          tarball="$(find "$release_dir" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
-          test -n "$tarball"
-          expected="$release_dir/absolutepraya-wt-$VERSION.tgz"
-          test "$tarball" = "$expected"
-          (
-            cd "$release_dir"
-            sha256sum wt wt.sh wt.fish "$(basename "$tarball")" > checksums.txt
-          )
-          echo "dir=$release_dir" >> "$GITHUB_OUTPUT"
-          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          node scripts/build-release.mjs > "$RUNNER_TEMP/release-build.json"
+          release_dir="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).directory' "$RUNNER_TEMP/release-build.json")"
+          tarball="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tarball' "$RUNNER_TEMP/release-build.json")"
+          version="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).version' "$RUNNER_TEMP/release-build.json")"
+          tag="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tag' "$RUNNER_TEMP/release-build.json")"
+          (cd "$release_dir" && sha256sum -c checksums.txt)
+          printf 'dir=%s\ntarball=%s\nversion=%s\ntag=%s\n' "$release_dir" "$tarball" "$version" "$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Publish npm package when needed
-        if: steps.release_state.outputs.action != 'skip'
+      - name: Validate release version and tag
+        if: github.event_name != 'push' || steps.version_change.outputs.changed != 'false'
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.assets.outputs.tag }}
+        run: npm run check-version -- --tag "$TAG"
+
+      - name: Publish or verify npm package
+        id: npm_release
+        if: github.event_name != 'push' || steps.version_change.outputs.changed != 'false'
+        shell: bash
+        env:
+          VERSION: ${{ steps.assets.outputs.version }}
           TARBALL: ${{ steps.assets.outputs.tarball }}
         run: |
           set -euo pipefail
-          version_file="$RUNNER_TEMP/npm-version.txt"
-          error_file="$RUNNER_TEMP/npm-version-error.txt"
-          if npm view "$PACKAGE_NAME@$VERSION" version --json >"$version_file" 2>"$error_file"; then
-            published_version="$(tr -d '"[:space:]' < "$version_file")"
-            if [ "$published_version" != "$VERSION" ]; then
-              echo "::error::npm returned version $published_version for $PACKAGE_NAME@$VERSION"
+          if npm view "$PACKAGE_NAME@$VERSION" dist.integrity --json > "$RUNNER_TEMP/npm-integrity.json" 2> "$RUNNER_TEMP/npm-integrity.error"; then
+            remote_integrity="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$RUNNER_TEMP/npm-integrity.json")"
+            local_integrity="$(node -e 'const crypto=require("node:crypto");const fs=require("node:fs");console.log("sha512-"+crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' "$TARBALL")"
+            if [ "$remote_integrity" != "$local_integrity" ]; then
+              echo "same-version npm package hash conflict for $PACKAGE_NAME@$VERSION" >&2
               exit 1
             fi
-            echo "npm package $PACKAGE_NAME@$VERSION is already published"
+            echo "npm package $PACKAGE_NAME@$VERSION already exists with matching hash"
+            echo "published=true" >> "$GITHUB_OUTPUT"
           else
-            if ! grep -Eq 'E404|404 Not Found|No match found' "$error_file"; then
-              cat "$error_file" >&2
+            if ! grep -Eq 'E404|404 Not Found|No match found' "$RUNNER_TEMP/npm-integrity.error"; then
+              cat "$RUNNER_TEMP/npm-integrity.error" >&2
               exit 1
             fi
-            echo "Publishing $PACKAGE_NAME@$VERSION through npm Trusted Publishing"
             npm publish "$TARBALL" --access public
+            echo "published=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create or verify release tag
-        if: steps.release_state.outputs.action != 'skip'
+      - name: Check existing GitHub Release assets
+        id: github_release
+        if: github.event_name != 'push' || steps.version_change.outputs.changed != 'false'
+        shell: bash
         env:
-          TAG: ${{ steps.version.outputs.tag }}
-          TAG_EXISTS: ${{ steps.release_state.outputs.tag_exists }}
+          TAG: ${{ steps.assets.outputs.tag }}
+          RELEASE_DIR: ${{ steps.assets.outputs.dir }}
         run: |
           set -euo pipefail
-          if [ "$TAG_EXISTS" = "true" ]; then
-            echo "$TAG already points to this main commit"
+          expected="$(find "$RELEASE_DIR" -maxdepth 1 -type f -printf '%f\n' | sort)"
+          if gh release view "$TAG" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/release-assets.txt" 2> "$RUNNER_TEMP/release-view.error"; then
+            actual="$(sort "$RUNNER_TEMP/release-assets.txt")"
+            if [ "$actual" != "$expected" ]; then
+              echo "same-version GitHub Release asset list conflict for $TAG" >&2
+              diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") || true
+              exit 1
+            fi
+            existing="$RUNNER_TEMP/existing-release"
+            rm -rf "$existing"
+            mkdir -m 700 "$existing"
+            gh release download "$TAG" --dir "$existing"
+            cmp "$RELEASE_DIR/checksums.txt" "$existing/checksums.txt"
+            (cd "$existing" && sha256sum -c checksums.txt)
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "GitHub Release $TAG already exists with matching hashes"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release tag
+        if: >-
+          (github.event_name != 'push' || steps.version_change.outputs.changed != 'false') &&
+          steps.github_release.outputs.exists != 'true'
+        shell: bash
+        env:
+          TAG: ${{ steps.assets.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git show-ref --tags --verify --quiet "refs/tags/$TAG"; then
+            target="$(git rev-list -n 1 "$TAG")"
+            if [ "$target" != "$GITHUB_SHA" ]; then
+              echo "same-version tag conflict: $TAG points to $target, expected $GITHUB_SHA" >&2
+              exit 1
+            fi
           else
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git tag -a "$TAG" "$GITHUB_SHA" -m "Release $TAG"
-            if ! git push origin "$TAG"; then
-              remote_tag_target="$(git ls-remote origin "refs/tags/$TAG^{}" | awk 'NR == 1 {print $1}')"
-              if [ "$remote_tag_target" != "$GITHUB_SHA" ]; then
-                echo "::error::could not create the expected release tag $TAG"
-                exit 1
-              fi
-            fi
+            git push origin "$TAG"
           fi
 
-      - name: Create or update GitHub Release
-        if: steps.release_state.outputs.action != 'skip'
+      - name: Create GitHub Release with exact assets
+        if: >-
+          (github.event_name != 'push' || steps.version_change.outputs.changed != 'false') &&
+          steps.github_release.outputs.exists != 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
+          TAG: ${{ steps.assets.outputs.tag }}
           RELEASE_DIR: ${{ steps.assets.outputs.dir }}
           TARBALL: ${{ steps.assets.outputs.tarball }}
         run: |
           set -euo pipefail
-          assets=(
-            "$RELEASE_DIR/wt"
-            "$RELEASE_DIR/wt.sh"
-            "$RELEASE_DIR/wt.fish"
-            "$TARBALL"
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "$TAG" \
+            --generate-notes \
+            "$RELEASE_DIR/wt" \
+            "$RELEASE_DIR/wt.sh" \
+            "$RELEASE_DIR/wt.fish" \
+            "$RELEASE_DIR/install.sh" \
+            "$TARBALL" \
             "$RELEASE_DIR/checksums.txt"
-          )
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "${assets[@]}" --clobber
-          else
-            gh release create "$TAG" \
-              --verify-tag \
-              --title "$TAG" \
-              --generate-notes \
-              "${assets[@]}"
-          fi
