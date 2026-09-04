@@ -9,4 +9,5 @@ test("renders the approved user name and slot placeholders", () => {
 });
 test("rejects unknown malformed and invalid template branches before Git", () => {
   for (const template of ["{user}/{unknown}", "{user/{name}", "{user}/bad branch"]) assert.throws(() => renderBranchTemplate(template, values), UsageError);
+  assert.throws(() => renderBranchTemplate("{name}", { ...values, name: "-x" }), UsageError);
 });

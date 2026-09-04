@@ -44,7 +44,7 @@ export function generateName(strategy: NameStrategy, used: ReadonlySet<string>, 
 
 export function resolveName(explicitName: string | undefined, strategy: NameStrategy, used: ReadonlySet<string>, options?: NameGenerationOptions): string {
   if (!explicitName) return generateName(strategy, used, options);
-  if (!explicitName.trim() || explicitName === "." || explicitName === ".." || /[\\/\0]/.test(explicitName)) {
+  if (!explicitName.trim() || explicitName === "." || explicitName === ".." || /[\u0000-\u001f\u007f-\u009f\\/]/.test(explicitName)) {
     throw new UsageError("worktree name must be a nonempty single path component.");
   }
   if (used.has(explicitName)) throw new UsageError(`worktree name ${JSON.stringify(explicitName)} is already in use.`);
@@ -53,7 +53,7 @@ export function resolveName(explicitName: string | undefined, strategy: NameStra
 
 /** Validate a Git branch before it reaches a Git subprocess. */
 export function sanitizeBranchName(branch: string): string {
-  if (!branch || branch.length > 1024 || /[\x00-\x20\x7f~^:?*\\[\]]/.test(branch) || branch.includes("..") || branch.includes("@{") || branch === "@" || branch.startsWith("/") || branch.endsWith("/") || branch.endsWith(".") || branch.includes("//") || branch.split("/").some((part) => !part || part.startsWith(".") || part.endsWith(".lock"))) {
+  if (!branch || branch.length > 1024 || branch.startsWith("-") || /[\x00-\x20\x7f~^:?*\\[\]]/.test(branch) || branch.includes("..") || branch.includes("@{") || branch === "@" || branch.startsWith("/") || branch.endsWith("/") || branch.endsWith(".") || branch.includes("//") || branch.split("/").some((part) => !part || part.startsWith(".") || part.endsWith(".lock"))) {
     throw new UsageError(`invalid Git branch name: ${JSON.stringify(branch)}`);
   }
   return branch;

@@ -5,10 +5,27 @@ import { UsageError } from "../src/errors.js";
 import { renderCdOutput, renderSection, writeOutput } from "../src/output.js";
 
 test("human section retains command information", () => {
-  const output = renderSection("Created worktree: adelaide", { branch: "abhip/adelaide", slot: 1 }, 12);
+  const output = renderSection("Created worktree: adelaide", { branch: "abhip/adelaide", slot: 1 }, { width: 12, trailingDivider: true });
   assert.match(output, /Created worktree: adelaide/);
   assert.match(output, /branch  abhip\/adelaide/);
   assert.equal(output.split("\n")[0], "═".repeat(12));
+  assert.equal(output.split("\n").at(-1), "═".repeat(12));
+});
+
+test("supports open sections before setup and closed final sections", () => {
+  const open = renderSection("Creating worktree", { name: "adelaide" }, { width: 12, trailingDivider: false });
+  const closed = renderSection("Created worktree: adelaide", { name: "adelaide" }, { width: 12, trailingDivider: true });
+  assert.notEqual(open.split("\n").at(-1), "═".repeat(12));
+  assert.equal(closed.split("\n").at(-1), "═".repeat(12));
+});
+
+test("rejects control characters in labels, values, and paths", () => {
+  assert.throws(() => renderSection("Creating\nworktree", { name: "adelaide" }), UsageError);
+  assert.throws(() => renderSection("Creating worktree", { path: "/repo/\u001b[31m" }), UsageError);
+  assert.throws(() => renderSection("Creating worktree", { "bad\tlabel": "adelaide" }), UsageError);
+  for (const path of ["/repo/.worktrees/adelaide\n__cd__:/tmp/evil", "/repo/.worktrees/adelaide\u001b[31m", "/repo/.worktrees/adelaide\r"] ) {
+    assert.throws(() => renderCdOutput(path), UsageError);
+  }
 });
 test("cd output has one absolute-path sentinel", () => {
   const output = renderCdOutput("/repo/.worktrees/adelaide");

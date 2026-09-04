@@ -15,11 +15,11 @@ test("word pairs avoid collisions and explicit names are checked", () => {
   const name = generateName("word_pairs", new Set(["amber-anchor"]), { random: () => 0.0001, tokenHex: () => "beef" });
   assert.equal(name, "amber-anchor-beef");
   assert.equal(resolveName("feature-one", "cities", new Set()), "feature-one");
-  for (const name of ["feature/one", "feature\\one", ".", ".."]) assert.throws(() => resolveName(name, "cities", new Set()), UsageError);
+  for (const name of ["feature/one", "feature\\one", ".", "..", "name\nwith-control"]) assert.throws(() => resolveName(name, "cities", new Set()), UsageError);
   assert.throws(() => resolveName("feature-one", "cities", new Set(["feature-one"])), UsageError);
 });
 
 test("validates branch names without silently rewriting them", () => {
   assert.equal(sanitizeBranchName("user/feature-one"), "user/feature-one");
-  for (const branch of ["", "user//feature", "user/../feature", "user/feature.lock", "user feature", "user/[feature]"]) assert.throws(() => sanitizeBranchName(branch), UsageError);
+  for (const branch of ["", "-x", "user//feature", "user/../feature", "user/feature.lock", "user feature", "user/[feature]"]) assert.throws(() => sanitizeBranchName(branch), UsageError);
 });
