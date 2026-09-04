@@ -12,6 +12,12 @@ import { VERSION } from "./version.js";
 const RELEASE_API_URL = "https://api.github.com/repos/absolutepraya/wt/releases/latest";
 const RELEASE_HOST = "github.com";
 const RELEASE_PATH = "/absolutepraya/wt/releases/download";
+const RELEASE_CDN_HOSTS = new Set([
+  "objects.githubusercontent.com",
+  "release-assets.githubusercontent.com",
+  "github-releases.githubusercontent.com",
+]);
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const REQUIRED_ASSETS = ["wt", "wt.sh", "wt.fish", "checksums.txt"] as const;
 const MAX_API_BYTES = 1024 * 1024;
 const MAX_ASSET_BYTES = 10 * 1024 * 1024;
@@ -30,6 +36,8 @@ export interface UpdateServices {
   executablePath: string;
   configDir: string;
   now: () => Date;
+  /** Test-only failure injection; production callers use the default rename. */
+  renameImpl?: typeof rename;
 }
 
 interface InstallMetadata {
@@ -121,6 +129,47 @@ function validateAssetUrl(name: string, tag: string, rawUrl: unknown): string {
   return parsed.href;
 }
 
+function validateRedirectUrl(name: string, tag: string, rawUrl: string, previous: URL): URL {
+  let target: URL;
+  try { target = new URL(rawUrl, previous); } catch { throw new UpdateError(`release asset ${name} has an invalid redirect.`); }
+  if (target.protocol !== "https:" || target.port || target.username || target.password || target.hash) {
+    throw new UpdateError(`release asset ${name} redirected to an unapproved URL.`);
+  }
+  if (target.hostname === RELEASE_HOST) {
+    if (target.search || target.pathname !== `${RELEASE_PATH}/${tag}/${name}` || target.href !== expectedAssetUrl(name, tag)) {
+      throw new UpdateError(`release asset ${name} redirected outside the expected wt release.`);
+    }
+    return target;
+  }
+  if (previous.hostname !== RELEASE_HOST || !RELEASE_CDN_HOSTS.has(target.hostname)
+    || !target.pathname.startsWith("/github-production-release-asset/") || !target.searchParams.get("sig")) {
+    throw new UpdateError(`release asset ${name} redirected to an unapproved host.`);
+  }
+  return target;
+}
+
+async function fetchReleaseAsset(
+  name: string,
+  tag: string,
+  url: string,
+  fetchImpl: typeof fetch,
+): Promise<Response> {
+  let current = new URL(validateAssetUrl(name, tag, url));
+  for (let redirects = 0; redirects <= 5; redirects += 1) {
+    let response: Response;
+    try {
+      response = await fetchImpl(current.href, { headers: { "User-Agent": `wt/${VERSION}` }, redirect: "manual" });
+    } catch {
+      throw new UpdateError(`download of ${name} failed.`);
+    }
+    if (!REDIRECT_STATUSES.has(response.status)) return response;
+    const location = response.headers.get("location");
+    if (!location) throw new UpdateError(`release asset ${name} returned a redirect without a location.`);
+    current = validateRedirectUrl(name, tag, location, current);
+  }
+  throw new UpdateError(`release asset ${name} exceeded the redirect limit.`);
+}
+
 export async function latestStableRelease(apiUrl: string, fetchImpl: typeof fetch = fetch): Promise<ReleaseInfo> {
   let payload: Buffer;
   try {
@@ -206,7 +255,10 @@ async function writeStaged(destination: string, contents: Buffer, executable: bo
   }
 }
 
-async function transactionalReplace(files: Array<{ destination: string; contents: Buffer; executable: boolean }>): Promise<void> {
+async function transactionalReplace(
+  files: Array<{ destination: string; contents: Buffer; executable: boolean }>,
+  renameImpl: typeof rename = rename,
+): Promise<void> {
   const replacements: Replacement[] = [];
   let completed = false;
   let rollbackFailed = false;
@@ -215,9 +267,9 @@ async function transactionalReplace(files: Array<{ destination: string; contents
     for (const replacement of replacements) {
       if (existsSync(replacement.destination)) {
         replacement.backup = join(dirname(replacement.destination), `.${basename(replacement.destination)}.wt-backup-${process.pid}-${Math.random().toString(16).slice(2)}`);
-        await rename(replacement.destination, replacement.backup);
+        await renameImpl(replacement.destination, replacement.backup);
       }
-      await rename(replacement.staged, replacement.destination);
+      await renameImpl(replacement.staged, replacement.destination);
       replacement.staged = "";
       replacement.installed = true;
     }
@@ -228,7 +280,7 @@ async function transactionalReplace(files: Array<{ destination: string; contents
         if (replacement.installed && existsSync(replacement.destination)) await rm(replacement.destination, { recursive: true, force: true });
         if (replacement.backup && existsSync(replacement.backup)) {
           if (existsSync(replacement.destination)) rollbackFailed = true;
-          else await rename(replacement.backup, replacement.destination);
+          else await renameImpl(replacement.backup, replacement.destination);
         }
       } catch { rollbackFailed = true; }
     }
@@ -266,7 +318,7 @@ async function downloadPayloads(release: ReleaseInfo, fetchImpl: typeof fetch, d
     const url = release.assets.get(asset);
     if (!url) throw new UpdateError(`latest stable release ${release.tag} is missing update asset ${asset}.`);
     try {
-      const payload = await responseBytes(await fetchImpl(url, { headers: { "User-Agent": `wt/${VERSION}` } }), asset === "checksums.txt" ? MAX_API_BYTES : MAX_ASSET_BYTES, `download of ${asset}`);
+      const payload = await responseBytes(await fetchReleaseAsset(asset, release.tag, url, fetchImpl), asset === "checksums.txt" ? MAX_API_BYTES : MAX_ASSET_BYTES, `download of ${asset}`);
       await writeFile(join(directory, asset), payload, { mode: asset === "wt" ? 0o700 : 0o600, flag: "wx" });
       payloads.set(asset, payload);
     } catch (error) {
@@ -285,6 +337,7 @@ function updateServices(services?: UpdateServices): UpdateServices {
     executablePath: resolve(services?.executablePath ?? process.argv[1] ?? process.execPath),
     configDir: resolve(configDir),
     now: services?.now ?? (() => new Date()),
+    renameImpl: services?.renameImpl ?? rename,
   };
 }
 
@@ -292,7 +345,7 @@ function diagnostic(context: CliContext, installed: string, release: ReleaseInfo
   context.io.stdout.write(`Installed version: ${installed}\nLatest stable version: ${release.version} (${release.tag})\n`);
 }
 
-export async function runUpdate(context: CliContext, checkOnly: boolean, services?: UpdateServices): Promise<number> {
+async function runUpdateInternal(context: CliContext, checkOnly: boolean, services?: UpdateServices): Promise<number> {
   const current = updateServices(services);
   const metadataPath = installMetadataPath(current.configDir);
   const channel = detectInstallChannel({ executablePath: current.executablePath, cwd: context.cwd, metadataPath });
@@ -346,10 +399,19 @@ export async function runUpdate(context: CliContext, checkOnly: boolean, service
       { destination: join(current.configDir, "wt.sh"), contents: installPayloads.get("wt.sh")!, executable: false },
       { destination: join(current.configDir, "wt.fish"), contents: installPayloads.get("wt.fish")!, executable: false },
       { destination: metadataPath, contents: Buffer.from(`${JSON.stringify(metadata, null, 2)}\n`), executable: false },
-    ]);
+    ], current.renameImpl);
     context.io.stdout.write(`Updated wt from ${VERSION} to ${release.version}.\n`);
     return 0;
   } finally {
     await rm(payloadDirectory, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+export async function runUpdate(context: CliContext, checkOnly: boolean, services?: UpdateServices): Promise<number> {
+  try {
+    return await runUpdateInternal(context, checkOnly, services);
+  } catch (error) {
+    if (error instanceof UpdateError) throw error;
+    throw new UpdateError(`update failed: ${safeError(error)}.`);
   }
 }

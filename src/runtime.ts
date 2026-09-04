@@ -35,11 +35,12 @@ export function detectInstallChannel(options: ChannelOptions = {}): InstallChann
     if (record?.channel === "standalone" && recordedBinary && samePath(recordedBinary, executablePath)) return "standalone";
   } catch { /* absent or malformed metadata is not evidence */ }
 
-  const npmMarker = `${sep}node_modules${sep}@absolutepraya${sep}wt${sep}`;
-  const npmMarkerAlt = `${sep}node_modules${sep}@absolutepraya${sep}wt`;
-  if (executablePath.includes(npmMarker) || executablePath.includes(npmMarkerAlt)) {
+  const npmMarker = `${sep}node_modules${sep}@absolutepraya${sep}wt`;
+  const npmMarkerIndex = executablePath.lastIndexOf(npmMarker);
+  const npmMarkerEnd = npmMarkerIndex + npmMarker.length;
+  if (npmMarkerIndex >= 0 && (executablePath.length === npmMarkerEnd || executablePath[npmMarkerEnd] === sep)) {
     const marker = `${sep}node_modules${sep}`;
-    const nodeModules = executablePath.lastIndexOf(marker);
+    const nodeModules = executablePath.lastIndexOf(marker, npmMarkerIndex);
     const consumerRoot = executablePath.slice(0, nodeModules);
     return existsSync(join(consumerRoot, "package.json")) ? "npm-local" : "npm-global";
   }
