@@ -102,6 +102,21 @@ test("installer preflight and failed remote validations create no final files", 
   }
 });
 
+test("installer rejects arbitrary direct release origins before downloading", async () => {
+  const root = temporaryRoot(), server = await startServer();
+  try {
+    const result = invoke(bootstrap(root), root, server.baseUrl, { WT_RELEASE_API_URL: "https://evil.example/repos/absolutepraya/wt/releases/latest" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /approved GitHub endpoint or loopback fixture/);
+    assert.equal(existsSync(join(root, "prefix", "bin", "wt")), false);
+    const requests = await (await fetch(server.baseUrl + "/requests")).json() as string[];
+    assert.deepEqual(requests.filter((path) => path !== "/requests"), []);
+  } finally {
+    await server.stop();
+    remove(root);
+  }
+});
+
 test("installer preserves existing final files on API, missing asset, and malformed payload failures", async () => {
   for (const scenario of ["api-error", "missing", "malformed"]) {
     const root = temporaryRoot(), server = await startServer(scenario);

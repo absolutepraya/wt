@@ -54,6 +54,10 @@ const isHttp = (url) => url.protocol === "http:" || url.protocol === "https:";
 if (!isHttp(initial) || initial.username || initial.password || initial.hash) throw new Error("download URL is not a safe HTTP(S) URL");
 if (kind === "api" && initial.hostname === "api.github.com" && initial.pathname !== "/repos/absolutepraya/wt/releases/latest") throw new Error("API URL is outside the expected wt release endpoint");
 if (kind === "asset" && initial.hostname === "github.com" && !/^\/absolutepraya\/wt\/releases\/download\/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\/(?:wt|wt\.sh|wt\.fish|checksums\.txt)$/.test(initial.pathname)) throw new Error("asset URL is outside the expected wt release path");
+const loopbackHost = ["127.0.0.1", "localhost", "[::1]"].includes(initial.hostname);
+const officialApi = initial.protocol === "https:" && !initial.port && initial.hostname === "api.github.com" && initial.pathname === "/repos/absolutepraya/wt/releases/latest" && !initial.search;
+const officialAsset = initial.protocol === "https:" && !initial.port && initial.hostname === "github.com" && /^\/absolutepraya\/wt\/releases\/download\/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\/(?:wt|wt\.sh|wt\.fish|checksums\.txt)$/.test(initial.pathname) && !initial.search;
+if (!loopbackHost && !(kind === "api" ? officialApi : officialAsset)) throw new Error("initial download URL is not an approved GitHub endpoint or loopback fixture");
 const sameReleaseUrl = (url) => url.protocol === initial.protocol && url.hostname === initial.hostname && url.port === initial.port && url.pathname === initial.pathname && url.search === initial.search;
 const approvedCdnUrl = (url) => {
   const fixtureCdn = ["127.0.0.1", "localhost"].includes(initial.hostname) && url.protocol === initial.protocol && url.hostname === initial.hostname && url.port === initial.port;
