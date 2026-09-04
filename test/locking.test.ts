@@ -18,6 +18,7 @@ function writeLock(path: string, token: string, contents = metadata(token), stal
   if (stale) { const old = new Date(Date.now() - 61_000); utimesSync(metadataPath(path, token), old, old); }
 }
 function removeLock(path: string, token: string): void { unlinkSync(metadataPath(path, token)); rmdirSync(ownerPath(path, token)); rmdirSync(path); }
+function makeStale(path: string): void { const old = new Date(Date.now() - 61_000); utimesSync(path, old, old); }
 function deferred(): { promise: Promise<void>; resolve: () => void } { let resolve!: () => void; return { promise: new Promise<void>((done) => { resolve = done; }), resolve }; }
 function waitFor(child: ChildProcess, type: string): Promise<void> {
   return new Promise((resolve, reject) => { const onMessage = (message: unknown) => { if ((message as { type?: string }).type === type) { child.off("message", onMessage); resolve(); } }; child.on("message", onMessage); child.once("error", reject); child.once("exit", (code) => { if (code !== 0) reject(new Error(`worker exited ${code}`)); }); });
@@ -25,16 +26,24 @@ function waitFor(child: ChildProcess, type: string): Promise<void> {
 function waitForExit(child: ChildProcess): Promise<void> { return new Promise((resolve, reject) => { child.once("error", reject); child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`worker exited ${code}`))); }); }
 function spawnWorker(path: string, output: string, role: "holder" | "waiter"): ChildProcess {
   const source = join(mkdtempSync(join(tmpdir(), "wt-lock-worker-")), "worker.ts");
-  writeFileSync(source, `import { appendFile } from "node:fs/promises"; import { withProjectLock } from ${JSON.stringify(join(process.cwd(), "src", "locking.ts"))}; const wait = (type: string) => new Promise<void>((resolve) => process.on("message", (message: unknown) => { if ((message as { type?: string }).type === type) resolve(); })); void (async () => { const [path, output, role] = process.argv.slice(2); if (role === "waiter") { await wait("attempt"); process.send?.({ type: "attempting" }); } await withProjectLock(path!, async () => { await appendFile(output!, \`start:\${role}\\n\`); process.send?.({ type: role === "holder" ? "held" : "acquired" }); if (role === "holder") await wait("release"); await appendFile(output!, \`end:\${role}\\n\`); }); process.disconnect?.(); })().catch((error) => { console.error(error); process.exitCode = 1; process.disconnect?.(); });`);
+  writeFileSync(source, `import { appendFile } from "node:fs/promises"; import { withProjectLock } from ${JSON.stringify(join(process.cwd(), "src", "locking.ts"))}; const wait = (type: string) => new Promise<void>((resolve) => process.on("message", (message: unknown) => { if ((message as { type?: string }).type === type) resolve(); })); void (async () => { const [path, output, role] = process.argv.slice(2); const testHooks = role === "waiter" ? { beforeFirstAcquireAttempt: async () => { process.send?.({ type: "before-attempt" }); await wait("attempt"); }, afterFirstAcquireContention: () => process.send?.({ type: "contended" }) } : undefined; await withProjectLock(path!, async () => { await appendFile(output!, \`start:\${role}\\n\`); process.send?.({ type: role === "holder" ? "held" : "acquired" }); if (role === "holder") await wait("release"); await appendFile(output!, \`end:\${role}\\n\`); }, { testHooks }); process.disconnect?.(); })().catch((error) => { console.error(error); process.exitCode = 1; process.disconnect?.(); });`);
   return spawn(process.execPath, [join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"), source, path, output, role], { stdio: ["ignore", "inherit", "inherit", "ipc"] });
 }
 
-test("serializes child processes after a readiness-barrier acquisition attempt", async () => {
+test("serializes child processes after a confirmed in-path contention attempt", async () => {
   const path = lockPath(); const output = join(path, "..", "order.txt");
   const holder = spawnWorker(path, output, "holder"); await waitFor(holder, "held");
-  const waiter = spawnWorker(path, output, "waiter"); waiter.send({ type: "attempt" }); await waitFor(waiter, "attempting");
+  const waiter = spawnWorker(path, output, "waiter"); await waitFor(waiter, "before-attempt"); waiter.send({ type: "attempt" }); await waitFor(waiter, "contended");
   holder.send({ type: "release" }); await Promise.all([waitForExit(holder), waitForExit(waiter)]);
   assert.deepEqual(readFileSync(output, "utf8").trim().split("\n"), ["start:holder", "end:holder", "start:waiter", "end:waiter"]);
+});
+
+test("recovers stale empty and metadata-less crash windows without removing a successor", async () => {
+  const empty = lockPath(); mkdirSync(empty); makeStale(empty); await withProjectLock(empty, () => undefined); assert.throws(() => statSync(empty), /ENOENT/);
+  const incomplete = lockPath(); mkdirSync(incomplete); mkdirSync(ownerPath(incomplete, "crashed")); makeStale(incomplete); await withProjectLock(incomplete, () => undefined); assert.throws(() => statSync(incomplete), /ENOENT/);
+  const raced = lockPath(); mkdirSync(raced); mkdirSync(ownerPath(raced, "crashed")); makeStale(raced);
+  await assert.rejects(withProjectLock(raced, () => undefined, { timeoutMs: 120, testHooks: { beforeStaleCleanup: () => { rmdirSync(ownerPath(raced, "crashed")); rmdirSync(raced); writeLock(raced, "successor"); } } }), (error: unknown) => error instanceof ProjectLockError && error.code === "LOCK_TIMEOUT");
+  assert.equal(JSON.parse(readFileSync(metadataPath(raced, "successor"), "utf8")).token, "successor");
 });
 
 test("preserves a successor during deterministic stale recovery and release races", async () => {

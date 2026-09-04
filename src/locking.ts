@@ -12,6 +12,8 @@ export class ProjectLockError extends Error {
 interface LockMetadata { pid: number; hostname: string; token: string; startedAt: string; }
 interface LockSnapshot { ownerDirectory?: string; metadataPath?: string; metadataText?: string; metadata?: LockMetadata; modifiedAt: number; }
 export interface ProjectLockTestHooks {
+  beforeFirstAcquireAttempt?: () => Promise<void> | void;
+  afterFirstAcquireContention?: () => Promise<void> | void;
   beforeMetadataWrite?: () => Promise<void> | void;
   beforeStaleCleanup?: () => Promise<void> | void;
   beforeOuterRmdir?: () => Promise<void> | void;
@@ -86,7 +88,14 @@ async function removeSnapshot(lockPath: string, snapshot: LockSnapshot): Promise
     if (current !== snapshot.metadataText) return false;
     try { await unlink(snapshot.metadataPath); }
     catch (error) { return isMissing(error); }
-  } else if (snapshot.ownerDirectory) return false;
+  } else if (snapshot.ownerDirectory) {
+    try { await rmdir(join(lockPath, snapshot.ownerDirectory)); }
+    catch (error) {
+      if (isMissing(error)) return true;
+      if (isNotEmpty(error)) return false;
+      throw new ProjectLockError("LOCK_STALE_OWNER", `Unable to recover stale project lock ${lockPath}.`, { cause: error });
+    }
+  }
   if (snapshot.ownerDirectory) {
     try { await rmdir(join(lockPath, snapshot.ownerDirectory)); }
     catch (error) { if (!isMissing(error) && !isNotEmpty(error)) throw new ProjectLockError("LOCK_STALE_OWNER", `Unable to recover stale project lock ${lockPath}.`, { cause: error }); }
@@ -161,9 +170,12 @@ async function acquireProjectLock(lockPath: string, timeoutMs: number, hooks?: P
   if (!Number.isFinite(timeoutMs) || timeoutMs < 0) throw new ProjectLockError("LOCK_TIMEOUT", "Project lock timeout must be non-negative.");
   await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + timeoutMs;
+  let firstAttempt = true;
+  let firstContention = true;
   while (true) {
     const token = randomUUID();
     try {
+      if (firstAttempt) { firstAttempt = false; await hooks?.beforeFirstAcquireAttempt?.(); }
       await mkdir(lockPath, { mode: 0o700 });
       const metadata: LockMetadata = { pid: process.pid, hostname: hostname(), token, startedAt: new Date().toISOString() };
       try {
@@ -178,6 +190,7 @@ async function acquireProjectLock(lockPath: string, timeoutMs: number, hooks?: P
       return held;
     } catch (error) {
       if (!isExists(error)) throw error;
+      if (firstContention) { firstContention = false; await hooks?.afterFirstAcquireContention?.(); }
       await recoverStaleLock(lockPath, hooks);
       if (Date.now() >= deadline) throw new ProjectLockError("LOCK_TIMEOUT", `Timed out waiting for project lock ${lockPath}.`);
       await wait(RETRY_MS);
