@@ -1,18 +1,18 @@
 # Repository instructions
 
-These instructions apply to the `wt` repository and complement the user's and
-runtime-level instructions.
+These instructions apply to the `wt` repository and complement runtime-level
+instructions.
 
 ## Project model
 
-- `bin/wt` is the canonical implementation of the CLI. Keep its behavior
-  independent of Node and external Python packages.
-- `npm/wt.cjs` is a thin Node launcher for project-local npm installs. It must
-  forward to `bin/wt` rather than reimplementing worktree behavior.
+- WT is a Node.js CLI. `src/` is the implementation source and `dist/wt.cjs`
+  is the single bundled artifact used by both npm and standalone releases.
+- `package.json` is the package and release version source of truth. The
+  bundled artifact and stable release tag must match its `X.Y.Z` version.
 - `skills/wt/SKILL.md` is shipped agent guidance. Keep it aligned with the
-  commands and safety behavior implemented by the CLI.
-- `.wt/config.toml` is the repository's worktree configuration. It uses
-  `.worktrees`, `origin/main`, city names, and `{user}/{name}` branches.
+  current commands, installation modes, and safety behavior.
+- `.wt/config.toml` is project configuration. It uses `.worktrees`,
+  `origin/main`, city names, and `{user}/{name}` by default.
 - `CONTEXT.md` is intentionally local-only and ignored. Do not recreate or
   commit it.
 
@@ -22,40 +22,55 @@ runtime-level instructions.
   the repository root with `~/.local/bin/wt new <name>` and use the path shown
   by the command.
 - Keep unrelated worktree changes untouched. Inspect the exact diff before
-  committing.
-- Push a new branch with `git push -u origin <branch>`.
+  committing and stage explicit paths only.
+- Push a new branch with `git push -u origin <branch>` only after approval.
 - Do not use raw `git worktree add` for normal repository work because this
-  project is configured for `wt`.
+  project is configured for WT.
+- Agents should use `wt new` without `--cd`. A child process cannot change the
+  working directory of its parent agent process.
 
 ## Validation
 
-Run the checks relevant to the change. The full CI matrix covers Python 3.11,
-3.12, and 3.13 on Ubuntu and macOS, plus npm smoke tests on Node 18, 20, and
-22.
+The CI matrix runs Node 18, 20, 22, and 24 on Ubuntu, macOS, and Windows.
+POSIX installer tests run on Unix runners, while the Windows job runs the
+cross-platform Node test subset and npm smoke checks.
 
 ```bash
-python -m pytest -q tests/
-python -c "import ast; ast.parse(open('bin/wt').read())"
-python bin/wt --help
+npm ci
+npm test
 npm run check
+npm run check-version
 npm run pack:check
-bash scripts/check-npm-package.sh
+npm run smoke:npm
+bash -n install.sh
+bash scripts/check-installer.sh
 git diff --check
 ```
 
-Use `mise exec node@22.21.1 -- <command>` for the pinned local Node runtime
-when the repository's mise configuration is available.
+When available, use `mise exec node@22.21.1 -- <command>` for the pinned local
+Node runtime.
 
-## Documentation and releases
+## Distribution and releases
 
-- Keep `README.md`, `CHANGELOG.md`, `docs/adr/`, and `skills/wt/SKILL.md`
-  consistent with user-facing behavior and distribution changes.
-- The project-local npm package is `@absolutepraya/wt`. Its package version is
-  defined in `package.json`.
-- Publish only from merged `main`, after validating the packed artifact. Tag
-  the release as `vX.Y.Z`, publish the public package, and verify the registry
-  version plus a clean consumer install.
-- Do not describe the npm package as available from the registry until a
-  registry lookup confirms the publication.
-- Never commit credentials, npm tokens, generated local context, or unrelated
-  machine-specific files.
+- Standalone installation is macOS/Linux only and uses the latest stable
+  GitHub Release. It requires Node.js 18+ and Git, verifies checksums, and
+  atomically replaces the executable and shell wrappers with rollback on
+  installation or smoke-test failure.
+- npm global and local installations support macOS, Linux, and Windows. npm
+  never edits shell profiles. npm-managed installations update through npm.
+- Source checkouts update through Git. `wt update` may self-update only a
+  standalone installation.
+- A release is built from merged `main` only. CI uses one `dist/wt.cjs` build
+  for npm and standalone assets, verifies `vX.Y.Z`, and publishes through npm
+  Trusted Publishing with GitHub Actions OIDC.
+- A release contains `wt`, `wt.sh`, `wt.fish`, `install.sh`, the exact npm
+  tarball, and `checksums.txt`. The checksum manifest covers every other
+  release asset.
+- Do not push, publish, create tags, or create GitHub Releases from a feature
+  branch. Never commit npm tokens or other credentials.
+
+## User-facing documentation
+
+Keep `README.md`, `CHANGELOG.md`, `docs/adr/`, `docs/RELEASING.md`, and
+`skills/wt/SKILL.md` consistent with the bundled Node distribution, shell
+initializers, migration guidance, and release contract.
