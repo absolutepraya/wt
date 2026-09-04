@@ -14,7 +14,7 @@ Passed:
 - `bash -n install.sh`
 - `bash scripts/check-installer.sh`
 - `npm run typecheck`
-- `npx tsx --test test/installer.test.ts` (9 passing in the final focused run)
+- `npx tsx --test test/installer.test.ts` (10 passing in the final focused run)
 - `npm test` (80 passing, 2 existing Windows-only skips, run before the final summary-only correction)
 - `npm run check`
 - `npm run pack:check`
