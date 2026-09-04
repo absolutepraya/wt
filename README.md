@@ -265,7 +265,7 @@ absolutepraya-wt-X.Y.Z.tgz
 checksums.txt
 ```
 
-The checksum manifest covers the other five assets. The installer and `wt update` accept only stable `vX.Y.Z` releases, validate the expected release URLs, verify every downloaded checksum, and check the Node shebang and embedded version before replacement. Standalone replacement is staged and rolled back if installation or the post-install version/help smoke fails. See [docs/RELEASING.md](docs/RELEASING.md) for Trusted Publishing and release recovery.
+The checksum manifest covers the other five assets. The installer and `wt update` accept only stable `vX.Y.Z` releases, validate the expected release URLs, verify every downloaded checksum, and check the Node shebang and embedded version before replacement. The standalone installer stages its files, runs a direct `--version` and `--help` smoke on the installed executable, and rolls back if installation or that smoke fails. `wt update` uses its existing transactional replacement behavior for the standalone executable, wrappers, and metadata, with rollback on replacement failure; it does not currently run the post-install smoke. See [docs/RELEASING.md](docs/RELEASING.md) for Trusted Publishing and release recovery.
 
 ### One-time migration from Python standalone 0.3.x
 

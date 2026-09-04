@@ -74,6 +74,9 @@ Reviewed every match:
 - Task 11 fix round 1 assertions passed for the installer-only smoke and
   rollback wording, shell rc/config sourcing qualification, channel-specific
   `wt update --check` behavior, and delegated workflow status.
+- Task 11 fix round 2 corrected the README to distinguish the standalone
+  installer's post-install smoke and rollback from `wt update`'s existing
+  transactional replacement behavior.
 - No em dash characters found in the seven changed documentation files.
 - Changed-file review confirmed only the seven requested docs plus this SDD
   report were modified.
