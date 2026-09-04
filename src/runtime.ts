@@ -47,6 +47,14 @@ export const classifyInstallChannel = detectInstallChannel;
 function samePath(a: string, b: string): boolean { return normalize(isAbsolute(a) ? a : join(process.cwd(), a)).toLowerCase() === b.toLowerCase(); }
 function findUp(start: string, file: string): string | null { let current = start; while (true) { const candidate = join(current, file); if (existsSync(candidate)) return candidate; const parent = dirname(current); if (parent === current) return null; current = parent; } }
 function findSourceRoot(executablePath: string, cwd: string): string | null {
-  for (const start of [dirname(executablePath), cwd]) { const pkg = findUp(start, "package.json"); if (pkg && existsSync(join(dirname(pkg), "src"))) return dirname(pkg); }
+  for (const start of [dirname(executablePath), cwd]) {
+    const pkg = findUp(start, "package.json");
+    if (!pkg) continue;
+    try {
+      const manifest = JSON.parse(readFileSync(pkg, "utf8"));
+      const root = dirname(pkg);
+      if (manifest?.name === "@absolutepraya/wt" && existsSync(join(root, "src", "cli.ts")) && existsSync(join(root, "bin", "wt"))) return root;
+    } catch { /* an unrelated or malformed package cannot establish source context */ }
+  }
   return null;
 }

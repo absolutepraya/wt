@@ -11,7 +11,7 @@ export class WtError extends Error {
   }
 }
 function sanitizeMessage(message: string): string {
-  return message.replace(/[\r\n\0]/g, " ").replace(/\s+/g, " ").trim();
+  return message.replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim();
 }
 export class UsageError extends WtError { constructor(message: string) { super("USAGE_ERROR", message); } }
 export class ConfigurationError extends WtError { constructor(message: string) { super("CONFIG_ERROR", message); } }
