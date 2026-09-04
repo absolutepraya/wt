@@ -101,7 +101,10 @@ export async function runNew(
     const reserved = reserveSlot(state, config.maxSlots, entry);
     let worktreeCreated = false;
     try {
-      addWorktree(services.git, root, worktreePath, branch, base, tracksRemote);
+      // Ordinary branches must be created with -b. The --from path is the
+      // explicit remote/base operation that uses -B and may update a local
+      // branch to the selected remote ref.
+      addWorktree(services.git, root, worktreePath, branch, base, !tracksRemote);
       worktreeCreated = true;
       await saveState(statePath, reserved.state);
     } catch (error) {

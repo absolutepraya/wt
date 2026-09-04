@@ -1,7 +1,7 @@
 import { relative, resolve, isAbsolute } from "node:path";
 import { loadConfig } from "../config.js";
 import { listWorktrees } from "../git.js";
-import { normalizePath, projectId, statePaths } from "../paths.js";
+import { assertInsideWorktreeRoot, normalizePath, projectId, statePaths } from "../paths.js";
 import { loadState } from "../state.js";
 import type { CliContext } from "../types.js";
 import { writeOutput } from "../output.js";
@@ -15,9 +15,10 @@ function line(left: string, middle: string, right: string, widths: number[], fil
 export async function runLs(context: CliContext, services: WorktreeServices = defaultWorktreeServices): Promise<number> {
   const config = loadConfig(context.cwd);
   const root = resolve(config.repoRoot);
+  const worktreeRoot = assertInsideWorktreeRoot(resolve(root, config.worktreePath), root);
   const state = await loadState(statePaths(projectId(root), contextHome(context)).statePath);
+  const managedByPath = new Map(Object.entries(state.slots).map(([slot, entry]) => [normalizePath(assertInsideWorktreeRoot(resolve(root, entry.path), worktreeRoot)), { slot: Number(slot), entry }]));
   const worktrees = listWorktrees(services.git, root).map((entry) => ({ ...entry, path: normalizePath(entry.path) }));
-  const managedByPath = new Map(Object.entries(state.slots).map(([slot, entry]) => [normalizePath(resolve(root, entry.path)), { slot: Number(slot), entry }]));
   const cwd = normalizePath(context.cwd);
   const currentRoot = services.git.run(["rev-parse", "--show-toplevel"], context.cwd);
   const currentPath = currentRoot.status === 0 && currentRoot.stdout.trim() ? normalizePath(currentRoot.stdout.trim()) : cwd;
@@ -50,7 +51,7 @@ export async function runLs(context: CliContext, services: WorktreeServices = de
   writeOutput(context.io.stdout, output.join("\n"));
   const livePaths = new Set(worktrees.map((entry) => entry.path));
   for (const entry of Object.values(state.slots)) {
-    const expected = normalizePath(resolve(root, entry.path));
+    const expected = normalizePath(assertInsideWorktreeRoot(resolve(root, entry.path), worktreeRoot));
     if (!livePaths.has(expected)) writeOutput(context.io.stderr, `wt: stale state for ${JSON.stringify(entry.name)}: ${expected} is not an active Git worktree.`);
   }
   return 0;

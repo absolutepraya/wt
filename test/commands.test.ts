@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { runCd, runLs, runNew, runRm } from "../src/commands/index.js";
-import { SetupError } from "../src/errors.js";
-import { listWorktrees, systemGitRunner } from "../src/git.js";
+import { ConfigurationError, SetupError } from "../src/errors.js";
+import { listWorktrees, systemGitRunner, type GitResult } from "../src/git.js";
 import { projectId, statePaths } from "../src/paths.js";
 import { loadState, saveState } from "../src/state.js";
 import type { CliContext } from "../src/types.js";
+import type { WorktreeServices } from "../src/worktrees.js";
 import { createGitFixture, runGit } from "./fixtures.js";
 
 interface Repository { repo: string; home: string; }
@@ -57,6 +58,20 @@ test("new creates a tracked worktree and setup failure rolls Git and state back"
   assert.equal(listWorktrees(systemGitRunner, repository.repo).some((entry) => entry.path.endsWith("/.worktrees/broken")), false);
   assert.deepEqual((await loadState(statePath(repository))).slots, {});
   assert.equal(systemGitRunner.run(["show-ref", "--verify", "--quiet", "refs/heads/test/broken"], repository.repo).status, 1);
+});
+
+test("ordinary new refuses to reset an existing unchecked-out local branch", async () => {
+  const repository = makeRepository();
+  runGit(["checkout", "-b", "existing"], repository.repo);
+  writeFileSync(join(repository.repo, "existing.txt"), "keep this commit\n");
+  runGit(["add", "existing.txt"], repository.repo);
+  runGit(["commit", "-m", "existing unique work"], repository.repo);
+  const before = runGit(["rev-parse", "existing"], repository.repo).trim();
+  runGit(["checkout", "main"], repository.repo);
+  await assert.rejects(runNew(context(repository), { name: "ordinary", branch: "existing", noSetup: true, cdAfterCreate: false }), /already exists/);
+  assert.equal(runGit(["rev-parse", "existing"], repository.repo).trim(), before);
+  assert.equal(listWorktrees(systemGitRunner, repository.repo).some((entry) => entry.path.endsWith("/.worktrees/ordinary")), false);
+  assert.deepEqual((await loadState(statePath(repository))).slots, {});
 });
 
 test("rm preserves a worktree after teardown failure unless force is explicit", async () => {
@@ -111,6 +126,46 @@ test("slot exhaustion and stale state have safe diagnostics without mutation", a
   assert.equal(await runCd(cd, "one"), 1);
   assert.match(cd.output().stderr, /stale state/);
   assert.equal(cd.output().stdout.includes("__cd__:"), false);
+});
+
+test("state-derived escaped paths are rejected before cd, ls, or rm can inspect them", async () => {
+  const repository = makeRepository();
+  const state = await loadState(statePath(repository));
+  state.slots["1"] = { name: "escaped", branch: "test/escaped", path: "../../outside", base: "origin/main", created_at: "2026-09-04T00:00:00.000Z" };
+  await saveState(statePath(repository), state);
+  await assert.rejects(runCd(context(repository), "escaped"), ConfigurationError);
+  await assert.rejects(runLs(context(repository)), ConfigurationError);
+  await assert.rejects(runRm(context(repository), { name: "escaped", force: true, keepBranch: false }), ConfigurationError);
+});
+
+test("rm aborts after teardown when the persisted generation changes", async () => {
+  const repository = makeRepository();
+  await runNew(context(repository), { name: "race", noSetup: true, cdAfterCreate: false });
+  let worktreeLists = 0;
+  const services: WorktreeServices = {
+    now: () => new Date(),
+    random: () => 0,
+    git: {
+      run(args: string[], cwd: string): GitResult {
+        const result = systemGitRunner.run(args, cwd);
+        if (args[0] === "worktree" && args[1] === "list") {
+          worktreeLists += 1;
+          if (worktreeLists === 3) {
+            const path = statePath(repository);
+            const changed = JSON.parse(readFileSync(path, "utf8")) as { slots: Record<string, { created_at: string }> };
+            changed.slots["1"]!.created_at = "2026-09-04T00:00:01.000Z";
+            writeFileSync(path, `${JSON.stringify(changed)}\n`);
+          }
+        }
+        return result;
+      },
+    },
+  };
+  const result = context(repository);
+  assert.equal(await runRm(result, { name: "race", force: true, keepBranch: false }, services), 1);
+  assert.match(result.output().stderr, /changed while it was being removed/);
+  assert.equal(listWorktrees(systemGitRunner, repository.repo).some((entry) => entry.path.endsWith("/.worktrees/race")), true);
+  assert.equal(Object.values((await loadState(statePath(repository))).slots)[0]!.name, "race");
 });
 
 test("new serializes concurrent allocation through the project lock", async () => {

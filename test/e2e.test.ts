@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { test } from "node:test";
 import { runCd, runLs, runNew, runRm } from "../src/commands/index.js";
 import { listWorktrees, systemGitRunner } from "../src/git.js";
+import { projectId } from "../src/paths.js";
 import { createGitFixture } from "./fixtures.js";
 import type { CliContext } from "../src/types.js";
 
@@ -26,6 +27,7 @@ test("complete new, list, current cd, and remove lifecycle retains one sentinel 
   const create = command(repository.repo, repository.home);
   assert.equal(await runNew(create, { name: "lifecycle", noSetup: true, cdAfterCreate: true }), 0);
   assert.equal((create.text().match(/__cd__:/g) ?? []).length, 1);
+  assert.equal(create.text().includes(projectId(repository.repo)), false);
   const path = join(repository.repo, ".worktrees", "lifecycle");
   const listed = command(repository.repo, repository.home);
   assert.equal(await runLs(listed), 0);
