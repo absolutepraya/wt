@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -42,6 +42,14 @@ test("missing state is empty, malformed state is rejected, and interrupted temp 
   await saveState(path, good);
   writeFileSync(join(path, "..", ".state.json.interrupted.tmp"), "{not json");
   assert.deepEqual(await loadState(path), good);
+});
+
+test("rename failure preserves the previous state and cleans up the temporary file", async () => {
+  const path = statePath(); const previous = createEmptyState("/previous"); const replacement = createEmptyState("/replacement");
+  await saveState(path, previous);
+  await assert.rejects(saveState(path, replacement, { replace: async () => { throw new Error("rename failed"); } }), /rename failed/);
+  assert.deepEqual(await loadState(path), previous);
+  assert.equal(readdirSync(join(path, "..")).some((name) => name.endsWith(".tmp")), false);
 });
 
 test("state validation rejects incompatible entries and reports exhausted slots", async () => {

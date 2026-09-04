@@ -40,7 +40,9 @@ export async function loadState(statePath: string): Promise<PersistedState> {
 
 function isMissing(error: unknown): boolean { return isRecord(error) && error.code === "ENOENT"; }
 
-export async function saveState(statePath: string, state: PersistedState): Promise<void> {
+export interface StatePersistenceOptions { replace?: (temporaryPath: string, statePath: string) => Promise<void>; }
+
+export async function saveState(statePath: string, state: PersistedState, options: StatePersistenceOptions = {}): Promise<void> {
   validateState(state);
   const directory = dirname(statePath);
   const temporaryPath = join(directory, `.${statePath.split(/[\\/]/).pop()!}.${randomUUID()}.tmp`);
@@ -52,8 +54,7 @@ export async function saveState(statePath: string, state: PersistedState): Promi
       await handle.sync();
     } finally { await handle.close(); }
     await chmod(temporaryPath, 0o600);
-    await rename(temporaryPath, statePath);
-    await chmod(statePath, 0o600);
+    await (options.replace ?? rename)(temporaryPath, statePath);
   } catch (error) {
     await rm(temporaryPath, { force: true }).catch(() => undefined);
     throw error;
