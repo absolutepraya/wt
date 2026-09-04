@@ -4,6 +4,7 @@ import { homedir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import type { InstallChannel } from "./types.js";
 import { GitError } from "./errors.js";
+import { installMetadataPath, normalizePath } from "./paths.js";
 
 export function currentUser(env: NodeJS.ProcessEnv = process.env): string {
   const value = env.USER || env.USERNAME;
@@ -25,10 +26,13 @@ export const classifyPlatform = platformName;
 export interface ChannelOptions { executablePath?: string; cwd?: string; home?: string; metadataPath?: string; }
 export function detectInstallChannel(options: ChannelOptions = {}): InstallChannel | "unknown" {
   const executablePath = normalize(options.executablePath || process.argv[1] || process.execPath);
-  const metadata = options.metadataPath || join(options.home || homedir(), ".config", "wt", "install.json");
+  const metadata = options.metadataPath || installMetadataPath(join(options.home || homedir(), ".config", "wt"));
   try {
     const record = JSON.parse(readFileSync(metadata, "utf8"));
-    if (record?.channel === "standalone" && typeof record.binary === "string" && samePath(record.binary, executablePath)) return "standalone";
+    const recordedBinary = typeof record?.binary === "string"
+      ? record.binary
+      : typeof record?.executable_path === "string" ? record.executable_path : null;
+    if (record?.channel === "standalone" && recordedBinary && samePath(recordedBinary, executablePath)) return "standalone";
   } catch { /* absent or malformed metadata is not evidence */ }
 
   const npmMarker = `${sep}node_modules${sep}@absolutepraya${sep}wt${sep}`;
@@ -44,7 +48,11 @@ export function detectInstallChannel(options: ChannelOptions = {}): InstallChann
   return "unknown";
 }
 export const classifyInstallChannel = detectInstallChannel;
-function samePath(a: string, b: string): boolean { return normalize(isAbsolute(a) ? a : join(process.cwd(), a)).toLowerCase() === b.toLowerCase(); }
+function samePath(a: string, b: string): boolean {
+  const left = normalizePath(isAbsolute(a) ? a : join(process.cwd(), a));
+  const right = normalizePath(isAbsolute(b) ? b : join(process.cwd(), b));
+  return left === right;
+}
 function findUp(start: string, file: string): string | null { let current = start; while (true) { const candidate = join(current, file); if (existsSync(candidate)) return candidate; const parent = dirname(current); if (parent === current) return null; current = parent; } }
 function findSourceRoot(executablePath: string, cwd: string): string | null {
   for (const start of [dirname(executablePath), cwd]) {
@@ -53,7 +61,7 @@ function findSourceRoot(executablePath: string, cwd: string): string | null {
     try {
       const manifest = JSON.parse(readFileSync(pkg, "utf8"));
       const root = dirname(pkg);
-      if (manifest?.name === "@absolutepraya/wt" && existsSync(join(root, "src", "cli.ts")) && existsSync(join(root, "bin", "wt"))) return root;
+      if (manifest?.name === "@absolutepraya/wt" && existsSync(join(root, "src", "cli.ts"))) return root;
     } catch { /* an unrelated or malformed package cannot establish source context */ }
   }
   return null;

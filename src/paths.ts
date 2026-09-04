@@ -18,6 +18,9 @@ export function resolveMainWorktree(start = process.cwd()): string {
 }
 export function projectId(repoRoot: string): string { const root = normalizePath(repoRoot); return `${root.split(/[\\/]/).pop()!}-${createHash("sha1").update(root).digest("hex").slice(0, 8)}`; }
 export function statePaths(id: string, home = homedir()): { statePath: string; lockPath: string } { const base = join(home, ".wt"); return { statePath: join(base, `${id}.json`), lockPath: join(base, `${id}.lock`) }; }
+/** The standalone installer and updater share one metadata location. */
+export function wtConfigDir(home = homedir()): string { return join(home, ".config", "wt"); }
+export function installMetadataPath(configDir = wtConfigDir()): string { return join(configDir, "install.json"); }
 function canonicalizeWithMissingTail(value: string): string {
   const absolute = resolve(value);
   let existing = absolute;

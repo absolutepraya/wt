@@ -76,6 +76,7 @@ test("CLI returns stable usage and operational exit codes", async () => {
   assert.match(usage.output().stderr, /Try `wt --help`/);
 
   const update = capturedContext(process.cwd());
-  assert.equal(await runCli(["update", "--check"], update), 1);
-  assert.match(update.output().stderr, /update is not available/);
+  assert.equal(await runCli(["update", "--check"], update), 0);
+  assert.match(update.output().stdout, /Source checkout detected/);
+  assert.equal(update.output().stderr, "");
 });
