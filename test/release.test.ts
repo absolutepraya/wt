@@ -10,6 +10,8 @@ import { test } from "node:test";
 import { assertMatchingReleaseAssets, buildRelease, readChecksums, RELEASE_ASSETS } from "../scripts/build-release.mjs";
 // @ts-expect-error The version checker is intentionally an executable JavaScript file.
 import { checkVersion } from "../scripts/check-version.mjs";
+// @ts-expect-error The release gates are intentionally executable JavaScript files.
+import { assertTagTarget, classifyReleaseLookup, hasVersionChange, npmReleaseDecision } from "../scripts/release-gates.mjs";
 
 test("version check rejects an artifact with a mismatched embedded version", async () => {
   const root = mkdtempSync(join(tmpdir(), "wt-release-version-"));
@@ -69,6 +71,36 @@ test("duplicate checksum entries are rejected", async () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("release idempotency gates skip, reuse, and reject conflicts", () => {
+  assert.equal(hasVersionChange({ version: "0.3.1" }, { version: "0.3.1" }), false);
+  assert.equal(hasVersionChange({ version: "0.3.0" }, { version: "0.3.1" }), true);
+  assert.equal(npmReleaseDecision({ remoteIntegrity: "sha512-same", localIntegrity: "sha512-same" }), "reuse");
+  assert.equal(npmReleaseDecision({ remoteIntegrity: undefined, localIntegrity: "sha512-local" }), "publish");
+  assert.throws(
+    () => npmReleaseDecision({ remoteIntegrity: "sha512-other", localIntegrity: "sha512-local" }),
+    /same-version npm package hash conflict/,
+  );
+  assert.doesNotThrow(() => assertTagTarget("commit-a", "commit-a"));
+  assert.throws(() => assertTagTarget("commit-a", "commit-b"), /same-version tag conflict/);
+});
+
+test("GitHub release lookup accepts only a verified absence", () => {
+  assert.equal(classifyReleaseLookup({ exitCode: 0, stderr: "" }), "exists");
+  assert.equal(classifyReleaseLookup({ exitCode: 1, stderr: "release not found\n" }), "missing");
+  assert.throws(
+    () => classifyReleaseLookup({ exitCode: 1, stderr: "authentication failed\n" }),
+    /unexpected GitHub Release lookup failure/,
+  );
+  assert.throws(
+    () => classifyReleaseLookup({ exitCode: 1, stderr: "could not resolve api.github.com\n" }),
+    /unexpected GitHub Release lookup failure/,
+  );
+  assert.throws(
+    () => classifyReleaseLookup({ exitCode: 2, stderr: "release not found\n" }),
+    /unexpected GitHub Release lookup failure/,
+  );
 });
 
 test("same-version release hash conflicts fail closed", async () => {
