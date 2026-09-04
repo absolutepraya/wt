@@ -1,22 +1,30 @@
-# wt shell wrapper — sourced by bash/zsh to give `wt new` and `wt cd`
-# the ability to actually change your shell's working directory.
-#
-# The wt binary cannot cd for you (a child process can't change its
-# parent's cwd), so on `new` and `cd` it prints a `__cd__:<path>`
-# sentinel line; this wrapper reads it and runs `cd` in your shell.
-#
-# Install: source this file from ~/.bashrc or ~/.zshrc. The bundled
-# install.sh does this for you between marker comments.
+# Source this file to enable `wt new --cd` and `wt cd` in Bash or Zsh.
+# It is intentionally profile-free; use `eval "$(wt shell-init bash)"` for
+# explicit current-session activation.
 
 wt() {
-  case "$1" in
+  case "${1-}" in
     new|cd)
-      local out
-      out=$(command wt "$@") || return $?
-      local target
-      target=$(printf '%s' "$out" | awk '/^__cd__:/{print substr($0, 8); exit}')
-      printf '%s\n' "$out" | grep -v '^__cd__:' || true
-      [ -n "$target" ] && cd "$target"
+      local wt_output wt_status wt_line wt_target wt_consumed wt_candidate
+      wt_output=$(command wt "$@")
+      wt_status=$?
+      wt_target=""
+      wt_consumed=0
+      while IFS= read -r wt_line || [ -n "$wt_line" ]; do
+        if [ "$wt_status" -eq 0 ] && [ "$wt_consumed" -eq 0 ] && [ "${wt_line#__cd__:}" != "$wt_line" ]; then
+          wt_candidate="${wt_line#__cd__:}"
+          case "$wt_candidate" in
+            /*) wt_target="$wt_candidate"; wt_consumed=1; continue ;;
+          esac
+        fi
+        printf '%s\n' "$wt_line"
+      done <<EOF
+$wt_output
+EOF
+      if [ "$wt_status" -eq 0 ] && [ -n "$wt_target" ]; then
+        builtin cd -- "$wt_target" || return $?
+      fi
+      return "$wt_status"
       ;;
     *) command wt "$@" ;;
   esac
