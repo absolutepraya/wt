@@ -38,12 +38,28 @@ test("serializes child processes after a confirmed in-path contention attempt", 
   assert.deepEqual(readFileSync(output, "utf8").trim().split("\n"), ["start:holder", "end:holder", "start:waiter", "end:waiter"]);
 });
 
-test("recovers stale empty and metadata-less crash windows without removing a successor", async () => {
+test("recovers stale metadata-less crash windows without removing a successor", { skip: process.platform === "win32" }, async () => {
   const empty = lockPath(); mkdirSync(empty); makeStale(empty); await withProjectLock(empty, () => undefined); assert.throws(() => statSync(empty), /ENOENT/);
   const incomplete = lockPath(); mkdirSync(incomplete); mkdirSync(ownerPath(incomplete, "crashed")); makeStale(incomplete); await withProjectLock(incomplete, () => undefined); assert.throws(() => statSync(incomplete), /ENOENT/);
   const raced = lockPath(); mkdirSync(raced); mkdirSync(ownerPath(raced, "crashed")); makeStale(raced);
   await assert.rejects(withProjectLock(raced, () => undefined, { timeoutMs: 120, testHooks: { beforeStaleCleanup: () => { rmdirSync(ownerPath(raced, "crashed")); rmdirSync(raced); writeLock(raced, "successor"); } } }), (error: unknown) => error instanceof ProjectLockError && error.code === "LOCK_TIMEOUT");
   assert.equal(JSON.parse(readFileSync(metadataPath(raced, "successor"), "utf8")).token, "successor");
+});
+
+test("does not replace a successor published during stale empty-lock recovery", async () => {
+  const path = lockPath(); mkdirSync(path); makeStale(path);
+  try {
+    await assert.rejects(withProjectLock(path, () => { throw new Error("unexpected acquisition"); }, { timeoutMs: 0, testHooks: { beforeEmptyLockReplacement: () => { rmdirSync(path); writeLock(path, "successor"); } } }), (error: unknown) => error instanceof ProjectLockError && error.code === "LOCK_TIMEOUT");
+    assert.equal(JSON.parse(readFileSync(metadataPath(path, "successor"), "utf8")).token, "successor");
+    await assert.rejects(withProjectLock(path, () => { throw new Error("unexpected successor acquisition"); }, { timeoutMs: 0 }), (error: unknown) => error instanceof ProjectLockError && error.code === "LOCK_TIMEOUT");
+  } finally { if (statSync(path).isDirectory()) { const owner = readdirSync(path).find((entry) => entry.startsWith(OWNER_PREFIX)); if (owner) { unlinkSync(join(path, owner, METADATA_FILE)); rmdirSync(join(path, owner)); } rmdirSync(path); } }
+});
+
+test("cleans the prepared candidate when stale recovery fails", async () => {
+  const path = lockPath(); mkdirSync(path); makeStale(path);
+  await assert.rejects(withProjectLock(path, () => undefined, { testHooks: { beforeEmptyLockReplacement: () => { throw new Error("stale recovery failed"); } } }), /stale recovery failed/);
+  assert.equal(readdirSync(join(path, "..")).some((entry) => entry.startsWith(".project.lock.owner-")), false);
+  rmdirSync(path);
 });
 
 test("preserves a successor during deterministic stale recovery and release races", async () => {

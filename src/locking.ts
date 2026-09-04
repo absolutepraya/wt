@@ -1,7 +1,7 @@
-import { mkdir, open, readdir, readFile, rmdir, stat, unlink, utimes } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, rmdir, stat, unlink, utimes } from "node:fs/promises";
 import { hostname } from "node:os";
 import { randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 export type ProjectLockErrorCode = "LOCK_TIMEOUT" | "LOCK_STALE_OWNER" | "LOCK_OWNERSHIP";
 export class ProjectLockError extends Error {
@@ -16,6 +16,7 @@ export interface ProjectLockTestHooks {
   afterFirstAcquireContention?: () => Promise<void> | void;
   beforeMetadataWrite?: () => Promise<void> | void;
   beforeStaleCleanup?: () => Promise<void> | void;
+  beforeEmptyLockReplacement?: () => Promise<void> | void;
   beforeOuterRmdir?: () => Promise<void> | void;
   afterRefreshRead?: () => Promise<void> | void;
   refreshIntervalMs?: number;
@@ -30,11 +31,14 @@ const METADATA_FILE = "metadata.json";
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function isMissing(error: unknown): boolean { return isRecord(error) && error.code === "ENOENT"; }
-function isExists(error: unknown): boolean { return isRecord(error) && error.code === "EEXIST"; }
+function isOccupied(error: unknown): boolean { return isRecord(error) && (error.code === "EEXIST" || error.code === "ENOTEMPTY"); }
 function isNotEmpty(error: unknown): boolean { return isRecord(error) && (error.code === "ENOTEMPTY" || error.code === "EEXIST"); }
 function wait(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function ownerDirectory(lockPath: string, token: string): string { return join(lockPath, `${OWNER_PREFIX}${token}`); }
 function metadataPath(lockPath: string, token: string): string { return join(ownerDirectory(lockPath, token), METADATA_FILE); }
+function candidateDirectory(lockPath: string, token: string): string { return join(dirname(lockPath), `.${basename(lockPath)}.${OWNER_PREFIX}${token}.tmp`); }
+
+class LockContendedError extends Error {}
 
 function parseMetadata(value: string): LockMetadata | undefined {
   try {
@@ -80,6 +84,44 @@ async function inspectLock(lockPath: string): Promise<LockSnapshot | undefined> 
   }
 }
 
+async function lockPathExists(lockPath: string): Promise<boolean> {
+  try { await stat(lockPath); return true; }
+  catch (error) {
+    if (isMissing(error)) return false;
+    throw new ProjectLockError("LOCK_STALE_OWNER", `Unable to inspect project lock ${lockPath}.`, { cause: error });
+  }
+}
+
+async function cleanupCandidate(candidatePath: string, token: string): Promise<void> {
+  await unlink(join(candidatePath, `${OWNER_PREFIX}${token}`, METADATA_FILE)).catch(() => undefined);
+  await rmdir(join(candidatePath, `${OWNER_PREFIX}${token}`)).catch(() => undefined);
+  await rmdir(candidatePath).catch(() => undefined);
+}
+
+async function prepareCandidate(lockPath: string, token: string, metadata: LockMetadata, hooks?: ProjectLockTestHooks): Promise<string> {
+  const candidatePath = candidateDirectory(lockPath, token);
+  let candidateCreated = false;
+  try {
+    await mkdir(candidatePath, { mode: 0o700 });
+    candidateCreated = true;
+    await mkdir(join(candidatePath, `${OWNER_PREFIX}${token}`), { mode: 0o700 });
+    await hooks?.beforeMetadataWrite?.();
+    const handle = await open(join(candidatePath, `${OWNER_PREFIX}${token}`, METADATA_FILE), "wx", 0o600);
+    try { await handle.writeFile(JSON.stringify(metadata)); await handle.sync(); }
+    finally { await handle.close(); }
+    return candidatePath;
+  } catch (error) {
+    if (candidateCreated) await cleanupCandidate(candidatePath, token);
+    throw error;
+  }
+}
+
+async function renameIsContention(lockPath: string, error: unknown): Promise<boolean> {
+  if (isOccupied(error)) return true;
+  if (!isRecord(error) || error.code !== "EPERM") return false;
+  return lockPathExists(lockPath);
+}
+
 async function removeSnapshot(lockPath: string, snapshot: LockSnapshot): Promise<boolean> {
   if (snapshot.metadataPath && snapshot.metadataText !== undefined) {
     let current: string;
@@ -107,13 +149,25 @@ async function removeSnapshot(lockPath: string, snapshot: LockSnapshot): Promise
   }
 }
 
-async function recoverStaleLock(lockPath: string, hooks?: ProjectLockTestHooks): Promise<boolean> {
+type StaleRecovery = "none" | "removed" | "acquired";
+
+async function recoverStaleLock(lockPath: string, candidatePath: string, hooks?: ProjectLockTestHooks): Promise<StaleRecovery> {
   const snapshot = await inspectLock(lockPath);
-  if (!snapshot) return true;
-  if (Date.now() - snapshot.modifiedAt <= STALE_MS) return false;
-  if (snapshot.metadata && !ownerIsDead(snapshot.metadata)) return false;
+  if (!snapshot) return "none";
+  if (Date.now() - snapshot.modifiedAt <= STALE_MS) return "none";
+  if (snapshot.metadata && !ownerIsDead(snapshot.metadata)) return "none";
   await hooks?.beforeStaleCleanup?.();
-  return removeSnapshot(lockPath, snapshot);
+  if (!snapshot.ownerDirectory) {
+    await hooks?.beforeEmptyLockReplacement?.();
+    try {
+      await rename(candidatePath, lockPath);
+      return "acquired";
+    } catch (error) {
+      if (await renameIsContention(lockPath, error)) return "none";
+      throw new ProjectLockError("LOCK_STALE_OWNER", `Unable to replace stale project lock ${lockPath}.`, { cause: error });
+    }
+  }
+  return (await removeSnapshot(lockPath, snapshot)) ? "removed" : "none";
 }
 
 class HeldProjectLock {
@@ -160,10 +214,7 @@ class HeldProjectLock {
 }
 
 async function cleanupFailedAcquire(lockPath: string, token: string): Promise<void> {
-  const owner = ownerDirectory(lockPath, token);
-  await unlink(metadataPath(lockPath, token)).catch(() => undefined);
-  await rmdir(owner).catch(() => undefined);
-  await rmdir(lockPath).catch(() => undefined);
+  await cleanupCandidate(candidateDirectory(lockPath, token), token);
 }
 
 async function acquireProjectLock(lockPath: string, timeoutMs: number, hooks?: ProjectLockTestHooks): Promise<HeldProjectLock> {
@@ -174,24 +225,36 @@ async function acquireProjectLock(lockPath: string, timeoutMs: number, hooks?: P
   let firstContention = true;
   while (true) {
     const token = randomUUID();
+    let candidatePath: string | undefined;
     try {
-      if (firstAttempt) { firstAttempt = false; await hooks?.beforeFirstAcquireAttempt?.(); }
-      await mkdir(lockPath, { mode: 0o700 });
       const metadata: LockMetadata = { pid: process.pid, hostname: hostname(), token, startedAt: new Date().toISOString() };
-      try {
-        await mkdir(ownerDirectory(lockPath, token), { mode: 0o700 });
-        await hooks?.beforeMetadataWrite?.();
-        const handle = await open(metadataPath(lockPath, token), "wx", 0o600);
-        try { await handle.writeFile(JSON.stringify(metadata)); await handle.sync(); }
-        finally { await handle.close(); }
-      } catch (error) { await cleanupFailedAcquire(lockPath, token); throw error; }
+      if (firstAttempt) { firstAttempt = false; await hooks?.beforeFirstAcquireAttempt?.(); }
+      candidatePath = await prepareCandidate(lockPath, token, metadata, hooks);
+      if (await lockPathExists(lockPath)) throw new LockContendedError();
+      try { await rename(candidatePath, lockPath); candidatePath = undefined; }
+      catch (error) { if (await renameIsContention(lockPath, error)) throw new LockContendedError(); throw error; }
       const held = new HeldProjectLock(lockPath, token, hooks);
       held.startRefreshing();
       return held;
     } catch (error) {
-      if (!isExists(error)) throw error;
+      if (!(error instanceof LockContendedError)) {
+        if (candidatePath) await cleanupFailedAcquire(lockPath, token);
+        throw error;
+      }
       if (firstContention) { firstContention = false; await hooks?.afterFirstAcquireContention?.(); }
-      await recoverStaleLock(lockPath, hooks);
+      let recovery: StaleRecovery;
+      try { recovery = await recoverStaleLock(lockPath, candidatePath!, hooks); }
+      catch (recoveryError) {
+        if (candidatePath) await cleanupFailedAcquire(lockPath, token);
+        throw recoveryError;
+      }
+      if (recovery === "acquired") {
+        candidatePath = undefined;
+        const held = new HeldProjectLock(lockPath, token, hooks);
+        held.startRefreshing();
+        return held;
+      }
+      if (candidatePath) await cleanupFailedAcquire(lockPath, token);
       if (Date.now() >= deadline) throw new ProjectLockError("LOCK_TIMEOUT", `Timed out waiting for project lock ${lockPath}.`);
       await wait(RETRY_MS);
     }
