@@ -53,10 +53,10 @@ function statePath(repository: Repository): string { return statePaths(projectId
 
 interface CliProcessResult { code: number | null; stdout: string; stderr: string; }
 
-function runCliProcess(repository: Repository, action: "new" | "rm", name: string, extraEnv: Record<string, string>): Promise<CliProcessResult> {
+function runCliProcess(repository: Repository, action: "new" | "rm", name: string, extraEnv: Record<string, string>, options: { noSetup?: boolean } = {}): Promise<CliProcessResult> {
   const worker = join(mkdtempSync(join(tmpdir(), "wt-command-worker-")), "worker.ts");
   const commandModule = join(process.cwd(), "src", "commands", "index.ts");
-  writeFileSync(worker, `import { runNew, runRm } from ${JSON.stringify(commandModule)}; const [action, repo, home, name] = process.argv.slice(2); const context = { cwd: repo!, env: { ...process.env, HOME: home!, USER: "test" }, io: { stdout: process.stdout, stderr: process.stderr, stdin: process.stdin, stdoutIsTTY: false, stdinIsTTY: false } }; void (async () => { const code = action === "rm" ? await runRm(context, { name: name!, force: true, keepBranch: false }) : await runNew(context, { name: name!, noSetup: true, cdAfterCreate: false }); process.exitCode = code; })().catch((error) => { console.error(error); process.exitCode = 2; });\n`);
+  writeFileSync(worker, `import { runNew, runRm } from ${JSON.stringify(commandModule)}; const [action, repo, home, name] = process.argv.slice(2); const context = { cwd: repo!, env: { ...process.env, HOME: home!, USER: "test" }, io: { stdout: process.stdout, stderr: process.stderr, stdin: process.stdin, stdoutIsTTY: false, stdinIsTTY: false } }; void (async () => { const code = action === "rm" ? await runRm(context, { name: name!, force: true, keepBranch: false }) : await runNew(context, { name: name!, noSetup: ${options.noSetup ?? true}, cdAfterCreate: false }); process.exitCode = code; })().catch((error) => { console.error(error); process.exitCode = 2; });\n`);
   const child = spawn(process.execPath, [join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"), worker, action, repository.repo, repository.home, name], { cwd: repository.repo, env: { ...process.env, ...extraEnv }, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = ""; let stderr = "";
   child.stdout.on("data", (chunk) => { stdout += String(chunk); });
@@ -82,6 +82,34 @@ test("new creates a tracked worktree and setup failure rolls Git and state back"
   assert.equal(listWorktrees(systemGitRunner, repository.repo).some((entry) => entry.path.endsWith("/.worktrees/broken")), false);
   assert.deepEqual((await loadState(statePath(repository))).slots, {});
   assert.equal(systemGitRunner.run(["show-ref", "--verify", "--quiet", "refs/heads/test/broken"], repository.repo).status, 1);
+});
+
+test("setup rollback leaves a replacement created while setup was running", async () => {
+  const repository = makeRepository();
+  const started = join(repository.home, "setup-race-started");
+  const release = join(repository.home, "setup-race-release");
+  const setupCode = "const fs=require('node:fs');const started=process.env.WT_RACE_STARTED;const release=process.env.WT_RACE_RELEASE;fs.writeFileSync(started,'1');while(!fs.existsSync(release))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20);process.exit(7)";
+  writeConfig(repository.repo, `setup = [${JSON.stringify(`node -e ${JSON.stringify(setupCode)}`)}]`);
+  const environment = { WT_RACE_STARTED: started, WT_RACE_RELEASE: release };
+  const failedSetup = runCliProcess(repository, "new", "setup-race", environment, { noSetup: false });
+  let failedResult: CliProcessResult;
+  try {
+    await waitForFile(started);
+    const removed = await runCliProcess(repository, "rm", "setup-race", {});
+    assert.equal(removed.code, 0);
+    const replacement = await runCliProcess(repository, "new", "setup-race", {});
+    assert.equal(replacement.code, 0);
+  } finally {
+    writeFileSync(release, "1");
+    failedResult = await failedSetup;
+  }
+  assert.equal(failedResult.code, 2);
+  assert.match(failedResult.stderr, /setup rollback conflict/);
+  assert.equal(listWorktrees(systemGitRunner, repository.repo).some((entry) => entry.path.endsWith("/.worktrees/setup-race")), true);
+  const state = await loadState(statePath(repository));
+  assert.equal(Object.values(state.slots)[0]!.name, "setup-race");
+  assert.ok(Object.values(state.slots)[0]!.generation_token);
+  assert.equal(systemGitRunner.run(["show-ref", "--verify", "--quiet", "refs/heads/test/setup-race"], repository.repo).status, 0);
 });
 
 test("ordinary new refuses to reset an existing unchecked-out local branch", async () => {

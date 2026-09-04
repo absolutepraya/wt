@@ -1,11 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { SetupError, TeardownError } from "./errors.js";
-import { deleteBranch, removeWorktree, systemGitRunner, type GitRunner } from "./git.js";
+import { deleteBranch, listWorktrees, removeWorktree, systemGitRunner, type GitRunner } from "./git.js";
 import { withProjectLock } from "./locking.js";
+import { assertInsideWorktreeRoot, normalizePath } from "./paths.js";
 import { freeSlot, loadState, saveState } from "./state.js";
-import type { CliIO } from "./types.js";
+import type { CliIO, PersistedState, StateEntry } from "./types.js";
 import { renderSection, writeOutput } from "./output.js";
 
 export interface WorktreeServices {
@@ -19,6 +19,13 @@ export const defaultWorktreeServices: WorktreeServices = {
   now: () => new Date(),
   random: Math.random,
 };
+
+export class RollbackConflictError extends Error {
+  constructor() {
+    super("setup rollback conflict: the worktree reservation is absent or changed; leaving the path, branch, and replacement state untouched.");
+    this.name = "RollbackConflictError";
+  }
+}
 
 export interface SetupEnvironmentDetails {
   branch?: string;
@@ -76,14 +83,40 @@ export function runScripts(
   }
 }
 
-function removeReservation(root: string, statePath: string, path: string, generationToken?: string): Promise<void> {
-  return loadState(statePath).then(async (state) => {
-    const slot = Object.entries(state.slots).find(([, entry]) => resolve(root, entry.path) === resolve(path) && (generationToken === undefined || entry.generation_token === generationToken))?.[0];
-    if (slot) await saveState(statePath, freeSlot(state, Number(slot)));
-  });
+function lockPathForState(statePath: string): string {
+  const stateName = basename(statePath);
+  return join(dirname(statePath), `${stateName.slice(0, stateName.length - extname(stateName).length)}.lock`);
 }
 
-/** Best-effort recovery after a failed create. It never uses a shell for Git. */
+interface RollbackReservation {
+  slot: number;
+  entry: StateEntry;
+}
+
+function findRollbackReservation(
+  state: PersistedState,
+  root: string,
+  path: string,
+  branch: string,
+  generationToken: string | undefined,
+): RollbackReservation | undefined {
+  if (!generationToken) return undefined;
+  let expectedPath: string;
+  try { expectedPath = assertInsideWorktreeRoot(resolve(path), resolve(root)); }
+  catch { return undefined; }
+  const matches = Object.entries(state.slots).filter(([, entry]) => {
+    if (entry.generation_token !== generationToken || entry.branch !== branch) return false;
+    try {
+      const statePath = assertInsideWorktreeRoot(resolve(root, entry.path), resolve(root));
+      return normalizePath(statePath) === normalizePath(expectedPath);
+    } catch { return false; }
+  });
+  if (matches.length !== 1) return undefined;
+  const [slot, entry] = matches[0]!;
+  return { slot: Number(slot), entry };
+}
+
+/** Roll back a failed setup only while holding the reservation's project lock. */
 export async function rollbackWorktree(
   services: WorktreeServices,
   root: string,
@@ -95,17 +128,19 @@ export async function rollbackWorktree(
 ): Promise<void> {
   const absoluteRoot = resolve(root);
   const absolutePath = resolve(path);
-  try { removeWorktree(services.git, absoluteRoot, absolutePath, true); }
-  catch {
-    // A failed post-checkout hook can leave an unregistered directory. Its path
-    // was constructed under the configured worktree root by the caller.
-    if (existsSync(absolutePath)) rmSync(absolutePath, { recursive: true, force: true });
-  }
-  services.git.run(["worktree", "prune"], absoluteRoot);
-  if (removeBranch) {
-    try { deleteBranch(services.git, absoluteRoot, branch, true); } catch { /* cleanup is best effort */ }
-  }
-  const stateName = basename(statePath);
-  const lockPath = join(dirname(statePath), `${stateName.slice(0, stateName.length - extname(stateName).length)}.lock`);
-  await withProjectLock(lockPath, () => removeReservation(absoluteRoot, statePath, absolutePath, generationToken));
+  await withProjectLock(lockPathForState(statePath), async () => {
+    const state = await loadState(statePath);
+    const reservation = findRollbackReservation(state, absoluteRoot, absolutePath, branch, generationToken);
+    if (!reservation) throw new RollbackConflictError();
+
+    const live = listWorktrees(services.git, absoluteRoot).find((worktree) => normalizePath(worktree.path) === normalizePath(absolutePath));
+    if (!live || live.branch !== branch) throw new RollbackConflictError();
+
+    // The path and branch are now validated against both state and Git. Keep
+    // cleanup registered with Git and never recursively delete this path.
+    removeWorktree(services.git, absoluteRoot, absolutePath, true);
+    services.git.run(["worktree", "prune"], absoluteRoot);
+    if (removeBranch) deleteBranch(services.git, absoluteRoot, branch, true);
+    await saveState(statePath, freeSlot(state, reservation.slot));
+  });
 }
