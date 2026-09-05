@@ -248,6 +248,52 @@ exec "${process.execPath}" "$@"
   }
 });
 
+test("installer preserves unrelated contents when profile staging is replaced before cleanup", async () => {
+  const root = temporaryRoot(), server = await startServer();
+  try {
+    const home = join(root, "home"), shim = join(root, "shim"), profile = join(home, ".bashrc"), stagingPathFile = join(root, "staging-path"), preload = join(shim, "replace-staging.cjs");
+    mkdirSync(home, { recursive: true }); mkdirSync(shim, { recursive: true });
+    writeFileSync(preload, `
+const fs = require("node:fs");
+const path = require("node:path");
+const renameSync = fs.renameSync;
+fs.renameSync = (source, destination) => {
+  const result = renameSync(source, destination);
+  if (destination === process.env.WT_REPLACEMENT_PROFILE && path.basename(source) === "profile") {
+    const stagingDirectory = path.dirname(source);
+    fs.rmdirSync(stagingDirectory);
+    fs.mkdirSync(stagingDirectory);
+    fs.writeFileSync(path.join(stagingDirectory, "unrelated.txt"), "must survive\\n");
+    fs.writeFileSync(process.env.WT_REPLACEMENT_PATH_FILE, stagingDirectory);
+  }
+  return result;
+};
+`);
+    const nodeShim = join(shim, "node");
+    writeFileSync(nodeShim, `#!/usr/bin/env bash
+if [[ "$1" == "-" && "$2" == "$WT_REPLACEMENT_PROFILE" ]]; then
+  export NODE_OPTIONS="--require=$WT_REPLACEMENT_PRELOAD\${NODE_OPTIONS:+ $NODE_OPTIONS}"
+fi
+exec "${process.execPath}" "$@"
+`);
+    chmodSync(nodeShim, 0o755);
+    const result = invoke(bootstrap(root), root, server.baseUrl, {
+      HOME: home,
+      PATH: shim + ":" + process.env.PATH,
+      WT_REPLACEMENT_PROFILE: profile,
+      WT_REPLACEMENT_PRELOAD: preload,
+      WT_REPLACEMENT_PATH_FILE: stagingPathFile,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const stagingDirectory = readFileSync(stagingPathFile, "utf8");
+    assert.equal(readFileSync(join(stagingDirectory, "unrelated.txt"), "utf8"), "must survive\n");
+    assert.match(readFileSync(profile, "utf8"), /# wt-managed: BEGIN/);
+  } finally {
+    await server.stop();
+    remove(root);
+  }
+});
+
 test("installer preserves malformed profile content and escapes hostile installation paths", async () => {
   const root = temporaryRoot(), server = await startServer();
   try {

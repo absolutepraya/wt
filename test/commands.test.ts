@@ -9,7 +9,7 @@ import { runCd, runLs, runNew, runRm } from "../src/commands/index.js";
 import { ConfigurationError, SetupError } from "../src/errors.js";
 import { listWorktrees, systemGitRunner } from "../src/git.js";
 import { projectId, statePaths } from "../src/paths.js";
-import { loadState, saveState } from "../src/state.js";
+import { createEmptyState, loadState, saveState } from "../src/state.js";
 import type { CliContext } from "../src/types.js";
 import { createGitFixture, runGit } from "./fixtures.js";
 
@@ -107,6 +107,41 @@ test("new preserves a target that appears during a failed worktree creation", as
   assert.equal(removeAttempted, false);
   assert.equal(readFileSync(marker, "utf8"), "unrelated directory\n");
   assert.deepEqual((await loadState(statePath(repository))).slots, {});
+});
+
+test("new rolls Git back and preserves state when persistence fails after worktree creation", async () => {
+  const repository = makeRepository();
+  const path = statePath(repository);
+  const initialState = createEmptyState(repository.repo);
+  await saveState(path, initialState);
+  const worktreePath = join(repository.repo, ".worktrees", "state-failure");
+  const branch = "test/state-failure";
+  const stateSaveFailure = new Error("simulated state save failure");
+  let addCompleted = false;
+  const git = {
+    run(args: string[], cwd: string) {
+      const result = systemGitRunner.run(args, cwd);
+      if (args[0] === "worktree" && args[1] === "add" && result.status === 0) addCompleted = true;
+      return result;
+    },
+  };
+  await assert.rejects(
+    runNew(context(repository), { name: "state-failure", branch, noSetup: true, cdAfterCreate: false }, {
+      git,
+      now: () => new Date("2026-09-05T00:00:00.000Z"),
+      random: () => 0.1,
+      saveState: async () => {
+        assert.equal(addCompleted, true);
+        throw stateSaveFailure;
+      },
+    }),
+    (error: unknown) => error === stateSaveFailure,
+  );
+  assert.equal(addCompleted, true);
+  assert.equal(existsSync(worktreePath), false);
+  assert.equal(listWorktrees(systemGitRunner, repository.repo).some((entry) => entry.path.endsWith("/.worktrees/state-failure")), false);
+  assert.equal(systemGitRunner.run(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repository.repo).status, 1);
+  assert.deepEqual(await loadState(path), initialState);
 });
 
 test("setup rollback leaves a replacement created while setup was running", async () => {

@@ -118,3 +118,44 @@ All required local commands passed:
 - Native Windows execution and hosted cross-platform CI were not available
   locally; the two existing Windows-only lock tests remain skipped.
 - No remote, publish, merge, or push operations were performed.
+
+## Residual review fix pass
+
+- `install.sh` now records the randomized profile staging directory identity
+  and removes it only when the same directory is still present, using
+  non-recursive empty-directory removal. A replaced path, a missing path, or a
+  non-empty directory is left untouched, so unrelated contents cannot be
+  recursively removed. Exclusive staging writes, atomic profile renames,
+  malformed-marker preservation, and shell escaping remain covered.
+- `wt new` now has a narrow state-writer seam for deterministic failure
+  injection. A test forces persistence to fail after a real Git worktree add
+  and verifies that the worktree and branch are removed while the prior state
+  file remains unchanged. The failed-create race still leaves an unowned target
+  untouched.
+- Added deterministic regressions for profile staging-path replacement and
+  post-add state persistence failure.
+
+### Fix-pass checks
+
+- Focused `npx tsx --test test/commands.test.ts test/installer.test.ts`:
+  passed, 26 tests, 26 passed, 0 failed.
+- `npm test`: passed, 100 tests total, 98 passed, 2 expected Windows skips, 0
+  failed.
+- `npm run check`: passed typecheck, build, and bundled artifact syntax check.
+- `npm run check-version`: passed, version metadata is consistent at `0.3.1`.
+- `npm run pack:check`: passed, the dry-run tarball contains exactly 4 files.
+- `npm run smoke:npm`: passed local and global consumers, bundled shim
+  identity, version/help execution, lockfile recording, and profile
+  nonmutation.
+- `bash -n install.sh`: passed.
+- `bash scripts/check-installer.sh`: passed.
+- `zsh -n shell/wt.sh`: passed.
+- `git diff --check`: passed.
+- Optional checks were unavailable because `fish`, `pwsh`, and `actionlint`
+  are not installed locally.
+
+### Fix-pass limitations
+
+- Native Windows execution and hosted cross-platform CI are not available in
+  this local environment; CI remains the cross-platform gate.
+- No remote, publish, merge, or push operations are performed by this pass.

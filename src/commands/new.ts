@@ -35,6 +35,8 @@ interface NewResult {
   generationToken: string;
 }
 
+type NewServices = WorktreeServices & { saveState?: typeof saveState };
+
 function splitBase(base: string): [string, string] {
   const slash = base.indexOf("/");
   if (slash < 1 || slash === base.length - 1) throw new GitError(`invalid default_base ${JSON.stringify(base)}; expected <remote>/<branch>.`);
@@ -53,7 +55,7 @@ function newGenerationToken(state: Awaited<ReturnType<typeof loadState>>): strin
 export async function runNew(
   context: CliContext,
   options: NewOptions,
-  services: WorktreeServices = defaultWorktreeServices,
+  services: NewServices = defaultWorktreeServices,
 ): Promise<number> {
   const config = loadConfig(context.cwd);
   const root = resolve(config.repoRoot);
@@ -116,7 +118,7 @@ export async function runNew(
       // branch to the selected remote ref.
       addWorktree(services.git, root, worktreePath, branch, base, !tracksRemote);
       worktreeCreated = true;
-      await saveState(statePath, reserved.state);
+      await (services.saveState ?? saveState)(statePath, reserved.state);
     } catch (error) {
       // We already own the project lock. Do not call rollbackWorktree here,
       // because it deliberately reacquires that lock before changing state.

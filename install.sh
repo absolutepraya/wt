@@ -290,19 +290,29 @@ managed_block() {
   local profile="$1" body="$2"
   mkdir -p "$(dirname "$profile")"
   node - "$profile" "$body" <<'NODE'
-const { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require("node:fs");
+const { existsSync, lstatSync, mkdtempSync, readFileSync, renameSync, rmdirSync, writeFileSync } = require("node:fs");
 const { basename, dirname, join } = require("node:path");
 const [profile, body] = process.argv.slice(2);
 const begin = "# wt-managed: BEGIN", end = "# wt-managed: END", block = begin + "\n" + body + "\n" + end + "\n";
 const text = existsSync(profile) ? readFileSync(profile, "utf8") : "";
+function removeStagingDirectory(stagingDirectory, ownership) {
+  try {
+    const current = lstatSync(stagingDirectory);
+    if (!current.isDirectory() || current.dev !== ownership.dev || current.ino !== ownership.ino) return;
+    rmdirSync(stagingDirectory);
+  } catch (error) {
+    if (!error || !["ENOENT", "ENOTDIR", "ENOTEMPTY", "EEXIST"].includes(error.code)) throw error;
+  }
+}
 function replaceProfile(next) {
   const stagingDirectory = mkdtempSync(join(dirname(profile), "." + basename(profile) + ".wt-managed-"));
+  const ownership = lstatSync(stagingDirectory);
   const temporary = join(stagingDirectory, "profile");
   try {
     writeFileSync(temporary, next, { flag: "wx", mode: 0o600 });
     renameSync(temporary, profile);
   } finally {
-    rmSync(stagingDirectory, { recursive: true, force: true });
+    removeStagingDirectory(stagingDirectory, ownership);
   }
 }
 const beginMatches = [...text.matchAll(/^# wt-managed: BEGIN$/gm)];
