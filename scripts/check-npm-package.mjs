@@ -131,7 +131,6 @@ try {
 
   const packInfo = JSON.parse(run(npm, ["pack", "--dry-run", "--json"]))[0];
   const packedFiles = packInfo.files.map(({ path }) => path.replaceAll("\\", "/"));
-  console.error(`[DEBUG-wt-pack] npm=${npm} files=${JSON.stringify(packInfo.files)}`);
   for (const path of ["package.json", "dist/wt.cjs"]) {
     assert(packedFiles.includes(path), `tarball is missing ${path}`);
   }

@@ -40,6 +40,10 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Build bundled CLI for Windows tests
+        if: runner.os == 'Windows'
+        run: npm run build
+
       - name: Run Unix Node tests
         if: runner.os != 'Windows'
         run: npm test
