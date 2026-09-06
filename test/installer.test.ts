@@ -61,6 +61,10 @@ function invoke(script: string, root: string, baseUrl: string, extra: NodeJS.Pro
   });
 }
 
+function commandExists(command: string): boolean {
+  return spawnSync(command, ["--version"], { stdio: "ignore" }).error === undefined;
+}
+
 function remove(root: string): void {
   rmSync(root, { recursive: true, force: true });
 }
@@ -308,7 +312,7 @@ test("installer preserves malformed profile content and escapes hostile installa
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(join(home, ".bashrc"), "utf8"), originalBash);
     const zsh = readFileSync(join(home, ".zshrc"), "utf8");
-    assert.equal(spawnSync("zsh", ["-n", join(home, ".zshrc")]).status, 0);
+    if (commandExists("zsh")) assert.equal(spawnSync("zsh", ["-n", join(home, ".zshrc")]).status, 0);
     assert.match(zsh, /source '/);
     assert.match(result.stdout, /Immediate use:\s+'[^\n]*\$\(touch/);
     assert.match(result.stdout, /PATH:\s+add '[^\n]*\$\(touch/);

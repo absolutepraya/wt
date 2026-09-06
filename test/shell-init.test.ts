@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { renderShellInit } from "../src/shell-init.js";
 
 const SHELL_DIR = join(process.cwd(), "shell");
+const POSIX_BASH_SKIP = process.platform === "win32" ? "Bash integration is POSIX-only; Windows uses PowerShell" : false;
 
 function commandExists(command: string): boolean {
   return spawnSync("sh", ["-c", `command -v ${command}`], { encoding: "utf8" }).status === 0;
@@ -43,14 +44,14 @@ function runBash(source: string, fixturePaths: ReturnType<typeof fixture>): Retu
   });
 }
 
-test("Bash wrapper consumes only the first valid sentinel and preserves ordinary output", () => {
+test("Bash wrapper consumes only the first valid sentinel and preserves ordinary output", { skip: POSIX_BASH_SKIP }, () => {
   const paths = fixture();
   const result = runBash(join(SHELL_DIR, "wt.sh"), paths);
   assert.equal(result.status, 0, String(result.stderr));
   assert.equal(result.stdout, `ordinary output\n__cd__:relative-path\n__cd__:/later-valid-sentinel\nPWD=${paths.target}\n`);
 });
 
-test("generated Bash init requires explicit evaluation and supports paths with spaces", () => {
+test("generated Bash init requires explicit evaluation and supports paths with spaces", { skip: POSIX_BASH_SKIP }, () => {
   const paths = fixture();
   const init = join(mkdtempSync(join(tmpdir(), "wt-shell-init-")), "wt-init.sh");
   writeFileSync(init, renderShellInit("bash"));

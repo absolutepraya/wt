@@ -42,11 +42,18 @@ const profilePaths = [
 ];
 
 function run(command, args, options = {}) {
-  return execFileSync(command, args, {
+  return execCommand(command, args, {
     cwd: repository,
     env: commandEnvironment,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    ...options,
+  });
+}
+
+function execCommand(command, args, options = {}) {
+  return execFileSync(command, args, {
+    shell: process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command),
     ...options,
   });
 }
@@ -71,16 +78,16 @@ function assertProfilesUnchanged(before, label) {
 }
 
 function assertVersionHelp(command, cwd, env) {
-  const version = execFileSync(command, ["--version"], { cwd, env, encoding: "utf8" }).trim();
+  const version = execCommand(command, ["--version"], { cwd, env, encoding: "utf8" }).trim();
   assert(version === `wt ${packageManifest.version}`, `${command} returned unexpected version: ${version}`);
-  const help = execFileSync(command, ["--help"], { cwd, env, encoding: "utf8" });
+  const help = execCommand(command, ["--help"], { cwd, env, encoding: "utf8" });
   assert(help.includes("Usage: wt <command>"), `${command} did not print CLI help`);
 }
 
 function assertNpxVersionHelp(cwd, env) {
-  const version = execFileSync(npx, ["--no-install", "wt", "--version"], { cwd, env, encoding: "utf8" }).trim();
+  const version = execCommand(npx, ["--no-install", "wt", "--version"], { cwd, env, encoding: "utf8" }).trim();
   assert(version === `wt ${packageManifest.version}`, `${npx} wt returned unexpected version: ${version}`);
-  const help = execFileSync(npx, ["--no-install", "wt", "--help"], { cwd, env, encoding: "utf8" });
+  const help = execCommand(npx, ["--no-install", "wt", "--help"], { cwd, env, encoding: "utf8" });
   assert(help.includes("Usage: wt <command>"), `${npx} wt did not print CLI help`);
 }
 
