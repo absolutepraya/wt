@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -37,6 +37,23 @@ esac
   return { bin, start, target };
 }
 
+function windowsMarkerFixture(): { bin: string; start: string; target: string } {
+  const root = mkdtempSync(join(tmpdir(), "wt-shell-windows-marker-"));
+  const bin = join(root, "bin");
+  const start = join(root, "start");
+  const candidate = "C:\\wt-target";
+  const target = join(start, candidate);
+  mkdirSync(bin);
+  mkdirSync(start);
+  mkdirSync(target);
+  const executable = join(bin, "wt");
+  writeFileSync(executable, `#!/bin/sh
+printf '%s\\n' '__cd__:${candidate}'
+`);
+  chmodSync(executable, 0o755);
+  return { bin, start, target };
+}
+
 function runBash(source: string, fixturePaths: ReturnType<typeof fixture>): ReturnType<typeof spawnSync> {
   return spawnSync("bash", ["-c", 'source "$1"; cd "$2"; wt cd; printf "PWD=%s\\n" "$PWD"', "bash", source, fixturePaths.start], {
     encoding: "utf8",
@@ -66,6 +83,26 @@ test("generated Bash init requires explicit evaluation and supports paths with s
   });
   assert.equal(active.status, 0, String(active.stderr));
   assert.ok(String(active.stdout).includes(`PWD=${paths.target}\n`));
+});
+
+test("Bash wrappers consume Windows drive-rooted navigation sentinels", { skip: POSIX_BASH_SKIP }, () => {
+  const paths = windowsMarkerFixture();
+  for (const source of [join(SHELL_DIR, "wt.sh"), join(mkdtempSync(join(tmpdir(), "wt-shell-init-")), "wt-init.sh")]) {
+    if (source.endsWith("wt-init.sh")) writeFileSync(source, renderShellInit("bash"));
+    const result = runBash(source, paths);
+    assert.equal(result.status, 0, String(result.stderr));
+    assert.equal(result.stdout, `PWD=${paths.target}\n`);
+  }
+});
+
+test("PowerShell navigation reports failed directory changes", () => {
+  const generated = renderShellInit("powershell");
+  const shipped = readFileSync(join(SHELL_DIR, "wt.ps1"), "utf8");
+  for (const source of [generated, shipped]) {
+    assert.match(source, /Set-Location -LiteralPath \$wtTarget -ErrorAction Stop/);
+    assert.match(source, /catch/);
+    assert.match(source, /\$global:LASTEXITCODE = 1/);
+  }
 });
 
 test("generated shell init is syntax-valid on available shells and profile-free", () => {

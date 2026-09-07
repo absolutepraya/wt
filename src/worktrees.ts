@@ -140,7 +140,12 @@ export async function rollbackWorktree(
     // cleanup registered with Git and never recursively delete this path.
     removeWorktree(services.git, absoluteRoot, absolutePath, true);
     services.git.run(["worktree", "prune"], absoluteRoot);
-    if (removeBranch) deleteBranch(services.git, absoluteRoot, branch, true);
+    let branchCleanupError: unknown;
+    if (removeBranch) {
+      try { deleteBranch(services.git, absoluteRoot, branch, true); }
+      catch (error) { branchCleanupError = error; }
+    }
     await saveState(statePath, freeSlot(state, reservation.slot));
+    if (branchCleanupError) throw branchCleanupError;
   });
 }

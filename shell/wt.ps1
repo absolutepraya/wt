@@ -26,7 +26,13 @@ function wt {
             Write-Output $wtText
         }
         if ($wtStatus -eq 0 -and $null -ne $wtTarget) {
-            Set-Location -LiteralPath $wtTarget
+            try {
+                Set-Location -LiteralPath $wtTarget -ErrorAction Stop
+            } catch {
+                Write-Error "wt: could not change directory to $wtTarget."
+                $global:LASTEXITCODE = 1
+                return
+            }
         }
         $global:LASTEXITCODE = $wtStatus
         return

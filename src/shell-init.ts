@@ -12,7 +12,7 @@ const BASH_OR_ZSH = `wt() {
         if [ "$wt_status" -eq 0 ] && [ "$wt_consumed" -eq 0 ] && [ "\${wt_line#__cd__:}" != "$wt_line" ]; then
           wt_candidate="\${wt_line#__cd__:}"
           case "$wt_candidate" in
-            /*) wt_target="$wt_candidate"; wt_consumed=1; continue ;;
+            /*|[A-Za-z]:/*|[A-Za-z]:\\\\*|\\\\\\\\*) wt_target="$wt_candidate"; wt_consumed=1; continue ;;
           esac
         fi
         printf '%s\\n' "$wt_line"
@@ -38,7 +38,7 @@ const FISH = `function wt
             for wt_line in (string split \\n -- $wt_output)
                 if test $wt_status -eq 0; and test $wt_consumed -eq 0; and string match -q '__cd__:*' -- $wt_line
                     set -l wt_candidate (string sub -s 8 -- $wt_line)
-                    if string match -q '/*' -- $wt_candidate
+                    if string match -q '/*' -- $wt_candidate; or string match -r -q '^[A-Za-z]:[/\\\\]' -- $wt_candidate; or string match -r -q '^\\\\\\\\' -- $wt_candidate
                         set wt_target $wt_candidate
                         set wt_consumed 1
                         continue
@@ -83,7 +83,13 @@ const POWERSHELL = `function wt {
             Write-Output $wtText
         }
         if ($wtStatus -eq 0 -and $null -ne $wtTarget) {
-            Set-Location -LiteralPath $wtTarget
+            try {
+                Set-Location -LiteralPath $wtTarget -ErrorAction Stop
+            } catch {
+                Write-Error "wt: could not change directory to $wtTarget."
+                $global:LASTEXITCODE = 1
+                return
+            }
         }
         $global:LASTEXITCODE = $wtStatus
         return

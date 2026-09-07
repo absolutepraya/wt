@@ -43,7 +43,7 @@ export function generateName(strategy: NameStrategy, used: ReadonlySet<string>, 
 }
 
 export function resolveName(explicitName: string | undefined, strategy: NameStrategy, used: ReadonlySet<string>, options?: NameGenerationOptions): string {
-  if (!explicitName) return generateName(strategy, used, options);
+  if (explicitName === undefined) return generateName(strategy, used, options);
   if (!explicitName.trim() || explicitName === "." || explicitName === ".." || /[\u0000-\u001f\u007f-\u009f\\/]/.test(explicitName)) {
     throw new UsageError("worktree name must be a nonempty single path component.");
   }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -43,6 +43,19 @@ test("npm channel detection distinguishes a project-local package, global packag
   assert.equal(detectInstallChannel({ executablePath: global, home: join(root, "no-home") }), "npm-global");
   assert.equal(detectInstallChannel({ executablePath: join(source, "dist", "wt.cjs"), cwd: source, home: join(root, "no-home") }), "source");
   assert.equal(detectInstallChannel({ executablePath: join(root, "unmanaged", "wt"), cwd: join(root, "unmanaged"), home: join(root, "no-home") }), "unknown");
+});
+
+test("npm channel detection resolves a Unix bin symlink before classifying the package", { skip: process.platform === "win32" ? "Unix npm bins use symlinks" : false }, () => {
+  const root = mkdtempSync(join(tmpdir(), "wt-channel-symlink-"));
+  const project = join(root, "project");
+  const target = join(project, "node_modules", "@absolutepraya", "wt", "dist", "wt.cjs");
+  const link = join(root, "bin", "wt");
+  mkdirSync(join(project, "node_modules", "@absolutepraya", "wt", "dist"), { recursive: true });
+  mkdirSync(join(root, "bin"), { recursive: true });
+  writeFileSync(join(project, "package.json"), "{}\n");
+  writeFileSync(target, "#!/usr/bin/env node\n");
+  symlinkSync(target, link);
+  assert.equal(detectInstallChannel({ executablePath: link, cwd: root, home: join(root, "no-home") }), "npm-local");
 });
 
 test("npm update guidance is channel-specific and never invokes a self-update fetch", async () => {

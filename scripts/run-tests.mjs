@@ -14,8 +14,8 @@ async function findTests(directory) {
 }
 
 const tests = (await findTests("test")).sort();
-const tsx = join("node_modules", ".bin", process.platform === "win32" ? "tsx.cmd" : "tsx");
-const child = spawn(tsx, ["--test", ...tests], { stdio: "inherit", shell: false });
+const tsx = join("node_modules", "tsx", "dist", "cli.mjs");
+const child = spawn(process.execPath, [tsx, "--test", ...tests], { stdio: "inherit", shell: false });
 child.on("error", (error) => {
   console.error(`failed to start tests: ${error.message}`);
   process.exitCode = 1;

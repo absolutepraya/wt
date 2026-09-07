@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
 import { UpdateError } from "../src/errors.js";
@@ -51,7 +51,7 @@ function standaloneFixture(): { executable: string; configDir: string } {
   const root = mkdtempSync(join(tmpdir(), "wt-update-"));
   const executable = join(root, "bin", "wt");
   const configDir = join(root, "config");
-  mkdirSync(dirnameFor(executable), { recursive: true });
+  mkdirSync(dirname(executable), { recursive: true });
   mkdirSync(configDir, { recursive: true });
   writeFileSync(executable, "old executable\n");
   writeFileSync(join(configDir, "wt.sh"), "old shell\n");
@@ -59,8 +59,6 @@ function standaloneFixture(): { executable: string; configDir: string } {
   writeFileSync(join(configDir, "install.json"), JSON.stringify({ channel: "standalone", binary: executable }) + "\n");
   return { executable, configDir };
 }
-function dirnameFor(value: string): string { return value.slice(0, value.lastIndexOf("/")); }
-
 test("stable release parsing rejects prerelease forms and malformed release metadata", async () => {
   assert.equal(parseStableVersion("v1.2.3"), "1.2.3");
   assert.equal(parseStableVersion("01.2.3"), null);

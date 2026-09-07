@@ -38,9 +38,9 @@ The release-based installer downloads the latest stable release, verifies the SH
 
 The installer adds managed wrapper blocks to Bash, Zsh, and Fish startup files. The executable is available immediately at `~/.local/bin/wt` even if that directory is not yet in `PATH`. Future interactive shells that source the relevant rc or config file will load the integration. Bash login shells may not source `~/.bashrc` automatically, so use your shell's normal login configuration or source the wrapper explicitly. For the current shell, add the directory to `PATH` and evaluate the shell initializer as shown below.
 
-The installer checks the platform, Node.js, Git, and downloader prerequisites
-before writing the destination files. If Node.js or Git is missing, it stops
-with an actionable message and does not install a partial CLI.
+The installer checks the platform, Node.js, and Git before writing the
+destination files. If Node.js or Git is missing, it stops with an actionable
+message and does not install a partial CLI.
 
 The standalone installer supports macOS and Linux. Windows users should use the npm installation, which supports the CLI and shell initializer on Windows.
 

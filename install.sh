@@ -27,14 +27,13 @@ fi
 
 platform="$(uname -s)"
 [[ "$platform" == Darwin || "$platform" == Linux ]] || fail "standalone installation supports macOS and Linux only. Use npm install -g @absolutepraya/wt on Windows."
-if command -v curl >/dev/null 2>&1; then downloader=curl
-elif command -v wget >/dev/null 2>&1; then downloader=wget
-else fail "curl or wget is required to download release assets. Install curl with your macOS/Linux package manager."; fi
 command -v node >/dev/null 2>&1 || fail "Node.js 18 or newer is required. Install Node.js 18+ from https://nodejs.org/ and rerun this installer."
 node_version="$(node -p 'process.versions.node' 2>/dev/null || true)"
 [[ "$node_version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || fail "could not determine the installed Node.js version; Node.js 18 or newer is required."
 (( BASH_REMATCH[1] >= 18 )) || fail "Node.js $node_version found; wt requires Node.js 18 or newer. Install a supported Node.js release and rerun this installer."
-command -v git >/dev/null 2>&1 && git --version >/dev/null 2>&1 || fail "Git is required. Install Git with Xcode Command Line Tools on macOS or your Linux package manager, then rerun this installer."
+if ! command -v git >/dev/null 2>&1 || ! git --version >/dev/null 2>&1; then
+  fail "Git is required. Install Git with Xcode Command Line Tools on macOS or your Linux package manager, then rerun this installer."
+fi
 
 umask 077
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/wt-install.XXXXXX")" || fail "could not create a private temporary directory."
@@ -276,7 +275,7 @@ fi
 
 binary="${destinations[0]}"
 if ! "$binary" --version >/dev/null 2>&1 || ! "$binary" --help >/dev/null 2>&1; then
-  rollback
+  rollback || true
   if (( rollback_failed )); then
     fail "installed wt failed its version/help smoke; rollback artifacts were retained for recovery."
   fi

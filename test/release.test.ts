@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,6 +46,25 @@ test("release build contains the exact published asset set and checksums", async
   }
 });
 
+test("default release builds use unique temporary staging directories", async () => {
+  const first = await buildRelease();
+  try {
+    const second = await buildRelease();
+    try {
+      const prefix = join(tmpdir(), `wt-release-${first.version}-`);
+      assert.equal(first.directory.startsWith(prefix), true);
+      assert.equal(second.directory.startsWith(prefix), true);
+      assert.notEqual(first.directory, second.directory);
+      assert.equal(statSync(first.directory).isDirectory(), true);
+      assert.equal(statSync(second.directory).isDirectory(), true);
+    } finally {
+      rmSync(second.directory, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(first.directory, { recursive: true, force: true });
+  }
+});
+
 test("release checksums are deterministic and duplicate releases are reusable", async () => {
   const first = mkdtempSync(join(tmpdir(), "wt-release-first-"));
   const second = mkdtempSync(join(tmpdir(), "wt-release-second-"));
@@ -84,6 +103,15 @@ test("release idempotency gates skip, reuse, and reject conflicts", () => {
   );
   assert.doesNotThrow(() => assertTagTarget("commit-a", "commit-a"));
   assert.throws(() => assertTagTarget("commit-a", "commit-b"), /same-version tag conflict/);
+});
+
+test("npm integrity gate rejects a missing remote value", () => {
+  assert.throws(
+    () => execFileSync(process.execPath, ["scripts/release-gates.mjs", "npm-integrity", "--local", "sha512-local", "--remote"], { encoding: "utf8" }),
+    (error: unknown) => error instanceof Error
+      && "stderr" in error
+      && String((error as { stderr?: unknown }).stderr).includes("--remote requires a value"),
+  );
 });
 
 test("GitHub release lookup accepts only a verified absence", () => {

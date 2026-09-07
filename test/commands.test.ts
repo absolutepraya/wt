@@ -144,6 +144,24 @@ test("new rolls Git back and preserves state when persistence fails after worktr
   assert.deepEqual(await loadState(path), initialState);
 });
 
+test("setup rollback frees the slot when branch cleanup fails", async () => {
+  const repository = makeRepository('setup = ["exit 7"]');
+  const command = context(repository);
+  const git = {
+    run(args: string[], cwd: string) {
+      if (args[0] === "branch" && args[1] === "-D") return { status: 1, stdout: "", stderr: "simulated branch deletion failure" };
+      return systemGitRunner.run(args, cwd);
+    },
+  };
+  await assert.rejects(
+    runNew(command, { name: "branch-cleanup-failure", noSetup: false, cdAfterCreate: false }, { git, now: () => new Date("2026-09-05T00:00:00.000Z"), random: () => 0.1 }),
+    SetupError,
+  );
+  assert.deepEqual((await loadState(statePath(repository))).slots, {});
+  assert.equal(listWorktrees(systemGitRunner, repository.repo).some((entry) => entry.path.endsWith("/.worktrees/branch-cleanup-failure")), false);
+  assert.match(command.output().stderr, /setup rollback needs attention: git branch -D/);
+});
+
 test("setup rollback leaves a replacement created while setup was running", async () => {
   const repository = makeRepository();
   const started = join(repository.home, "setup-race-started");

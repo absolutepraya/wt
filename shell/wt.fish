@@ -12,7 +12,7 @@ function wt
             for wt_line in (string split \n -- $wt_output)
                 if test $wt_status -eq 0; and test $wt_consumed -eq 0; and string match -q '__cd__:*' -- $wt_line
                     set -l wt_candidate (string sub -s 8 -- $wt_line)
-                    if string match -q '/*' -- $wt_candidate
+                    if string match -q '/*' -- $wt_candidate; or string match -r -q '^[A-Za-z]:[/\\]' -- $wt_candidate; or string match -r -q '^\\\\' -- $wt_candidate
                         set wt_target $wt_candidate
                         set wt_consumed 1
                         continue

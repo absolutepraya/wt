@@ -46,6 +46,9 @@ function main(args) {
     const localIntegrity = option(args, "--local");
     const remoteIndex = args.indexOf("--remote");
     const remoteIntegrity = remoteIndex === -1 ? undefined : args[remoteIndex + 1];
+    if (remoteIndex !== -1 && (!remoteIntegrity || remoteIntegrity.startsWith("--"))) {
+      throw new Error("--remote requires a value");
+    }
     console.log(npmReleaseDecision({ remoteIntegrity, localIntegrity }));
     return;
   }

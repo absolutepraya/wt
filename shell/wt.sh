@@ -14,7 +14,7 @@ wt() {
         if [ "$wt_status" -eq 0 ] && [ "$wt_consumed" -eq 0 ] && [ "${wt_line#__cd__:}" != "$wt_line" ]; then
           wt_candidate="${wt_line#__cd__:}"
           case "$wt_candidate" in
-            /*) wt_target="$wt_candidate"; wt_consumed=1; continue ;;
+            /*|[A-Za-z]:/*|[A-Za-z]:\\*|\\\\*) wt_target="$wt_candidate"; wt_consumed=1; continue ;;
           esac
         fi
         printf '%s\n' "$wt_line"

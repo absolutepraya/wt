@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -80,9 +80,14 @@ export async function assertMatchingReleaseAssets(expectedDirectory, actualDirec
 export async function buildRelease({ repository = REPOSITORY, directory } = {}) {
   const root = resolve(repository);
   const version = await readReleaseVersion(root);
-  const releaseDirectory = directory ? resolve(directory) : join(tmpdir(), `wt-release-${version}`);
-  await rm(releaseDirectory, { recursive: true, force: true });
-  await mkdir(releaseDirectory, { recursive: true, mode: 0o700 });
+  let releaseDirectory;
+  if (directory) {
+    releaseDirectory = resolve(directory);
+    await rm(releaseDirectory, { recursive: true, force: true });
+    await mkdir(releaseDirectory, { recursive: true, mode: 0o700 });
+  } else {
+    releaseDirectory = await mkdtemp(join(tmpdir(), `wt-release-${version}-`));
+  }
 
   await execFileAsync(process.execPath, [join(root, "scripts", "build.mjs")], { cwd: root });
   const artifact = join(root, "dist", "wt.cjs");

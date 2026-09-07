@@ -25,7 +25,7 @@ export const classifyPlatform = platformName;
 
 export interface ChannelOptions { executablePath?: string; cwd?: string; home?: string; metadataPath?: string; }
 export function detectInstallChannel(options: ChannelOptions = {}): InstallChannel | "unknown" {
-  const executablePath = normalize(options.executablePath || process.argv[1] || process.execPath);
+  const executablePath = normalizePath(options.executablePath || process.argv[1] || process.execPath);
   const metadata = options.metadataPath || installMetadataPath(join(options.home || homedir(), ".config", "wt"));
   try {
     const record = JSON.parse(readFileSync(metadata, "utf8"));
