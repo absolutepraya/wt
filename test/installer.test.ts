@@ -334,7 +334,7 @@ test("local source installation uses dist and reports the exact missing-dist dia
       env: { ...process.env, HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "xdg"), PREFIX: join(root, "prefix"), WT_CONFIG_DIR: join(root, "config") },
     });
     assert.equal(local.status, 0, local.stderr);
-    assert.equal(JSON.parse(readFileSync(join(root, "config", "install.json"), "utf8")).tag, "v0.3.1");
+    assert.equal(JSON.parse(readFileSync(join(root, "config", "install.json"), "utf8")).tag, "v0.3.2");
 
     const incomplete = join(root, "source");
     mkdirSync(incomplete, { recursive: true });
