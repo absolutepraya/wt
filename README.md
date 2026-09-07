@@ -2,348 +2,310 @@
 
 [![CI](https://github.com/absolutepraya/wt/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/absolutepraya/wt/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/%40absolutepraya%2Fwt?logo=npm)](https://www.npmjs.com/package/@absolutepraya/wt)
+[![npm downloads](https://img.shields.io/npm/dm/%40absolutepraya%2Fwt?logo=npm)](https://www.npmjs.com/package/@absolutepraya/wt)
 [![GitHub Release](https://img.shields.io/github/v/release/absolutepraya/wt?display_name=tag&sort=semver)](https://github.com/absolutepraya/wt/releases)
-[![License](https://img.shields.io/github/license/absolutepraya/wt)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Node.js 18+](https://img.shields.io/badge/node.js-18%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![License](https://img.shields.io/github/license/absolutepraya/wt)](LICENSE)
 
-An agent-first Git worktree manager for running multiple AI coding agents in parallel on the same project.
+WT is an agent-first Git worktree manager for LLM agents. It lets several agents work concurrently on the same project through one unified worktree manager, regardless of which coding agent you use. Switch between Claude Code, Codex, Cursor, OpenCode, or another agent without changing the project's worktree workflow.
 
-`wt` gives each agent a named, isolated feature worktree while keeping branch creation, project setup and teardown, slot allocation, and port offsets in one consistent workflow. It is agent-agnostic, so switching between Claude Code, Codex, Cursor, OpenCode, or another coding agent does not change how the project manages worktrees.
+Each agent gets a named, isolated worktree while WT handles branch creation, project setup and teardown, slot allocation, port offsets, and safe cleanup. WT also works well for human-led parallel feature work.
 
-Although it is built for agent-first workflows, `wt` also works for human-led parallel feature work.
+## Why WT
 
-Single-file Python script. Stdlib only. No runtime dependencies beyond `git` and Python 3.11+.
-
-## Why
-
-If you're juggling several feature branches or AI coding agents, you've probably hit the friction of `git stash`, `git checkout`, re-running migrations, restarting your dev server, and dealing with port conflicts between branches. Worktrees solve the "one checkout per branch" half of this. `wt` solves the other half: per-branch infrastructure setup and teardown, port allocation, and a discoverable interface.
+Git worktrees solve the one-checkout-per-branch problem. WT also gives each
+worktree repeatable setup and teardown, a reserved slot, predictable port
+offsets, and a discoverable list of managed and unmanaged worktrees. That
+keeps several agents from competing over one checkout, one dependency setup,
+or one development port.
 
 ## Install
 
-### One-liner (macOS / Linux)
+WT has one Node.js CLI and three supported distribution modes. All modes require Node.js 18 or newer and Git.
+
+### Standalone installer, macOS or Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/absolutepraya/wt/main/install.sh | bash
+curl -fsSL https://github.com/absolutepraya/wt/releases/latest/download/install.sh | bash
 ```
 
-This installs:
+The release-based installer downloads the latest stable release, verifies the SHA-256 manifest and the embedded CLI version, then installs atomically. It installs:
 
-- `~/.local/bin/wt` — the script
-- `~/.config/wt/wt.sh` — the shell wrapper (sourced from your `~/.zshrc` / `~/.bashrc`)
-- `~/.config/wt/wt.fish` — the Fish wrapper (source it from your Fish config)
+- `~/.local/bin/wt`, the executable
+- `~/.config/wt/wt.sh`, the Bash and Zsh wrapper
+- `~/.config/wt/wt.fish`, the Fish wrapper
+- `~/.config/wt/install.json`, standalone channel metadata
 
-Open a new shell or `source ~/.zshrc` to pick up the wrapper.
+The installer adds managed wrapper blocks to Bash, Zsh, and Fish startup files. The executable is available immediately at `~/.local/bin/wt` even if that directory is not yet in `PATH`. Future interactive shells that source the relevant rc or config file will load the integration. Bash login shells may not source `~/.bashrc` automatically, so use your shell's normal login configuration or source the wrapper explicitly. For the current shell, add the directory to `PATH` and evaluate the shell initializer as shown below.
+
+The installer checks the platform, Node.js, and Git before writing the
+destination files. If Node.js or Git is missing, it stops with an actionable
+message and does not install a partial CLI.
+
+The standalone installer supports macOS and Linux. Windows users should use the npm installation, which supports the CLI and shell initializer on Windows.
+
+### Global npm install
+
+```bash
+npm install -g @absolutepraya/wt
+wt --help
+```
+
+This puts the `wt` executable in npm's global bin directory. It does not edit Bash, Zsh, Fish, or PowerShell profiles. Use npm to update it:
+
+```bash
+npm update -g @absolutepraya/wt
+```
+
+### Project-local npm install
+
+```bash
+npm install -D @absolutepraya/wt
+npx --no-install wt --help
+```
+
+The consuming project's lockfile pins WT for agents and npm scripts. The local package does not edit shell profiles. Use npm to update it:
+
+```bash
+npm update -D @absolutepraya/wt
+```
+
+The global and local npm packages use the same bundled `dist/wt.cjs` artifact as the standalone release. npm installs support macOS, Linux, and Windows for the core commands.
 
 ### From source
 
 ```bash
 git clone https://github.com/absolutepraya/wt ~/Documents/Projects/wt
 cd ~/Documents/Projects/wt
-./install.sh
+npm ci
+npm run build
+node dist/wt.cjs --help
 ```
 
-### Project-local npm install
+Source checkouts are updated through Git, for example with `git pull --ff-only` after reviewing the incoming changes. `wt update` does not modify a source checkout.
 
-For a Node or JavaScript project that wants to pin `wt` in its dependency lockfile, install the npm package as a development dependency:
+### Requirements and paths
+
+- Node.js 18 or newer
+- Git 2.5 or newer, with worktree support
+- macOS or Linux for the standalone installer
+- macOS, Linux, or Windows for npm installations
+
+Standalone files default to `~/.local/bin` and `~/.config/wt`. Set `PREFIX` or `WT_CONFIG_DIR` for a different standalone location. Project state is kept outside the repository at `~/.wt/<project-id>.json`, with a matching lock path. No npm package installation creates or changes a project's shell profile.
+
+## Shell integration
+
+`wt shell-init` prints the integration for the current shell. It does not edit any profile. The initializer is useful immediately after installation and when a shell uses a custom profile path.
+
+### Bash
 
 ```bash
-npm install --save-dev @absolutepraya/wt
-npx --no-install wt --help
+eval "$(~/.local/bin/wt shell-init bash)"
 ```
 
-The consuming project's `package-lock.json` pins the npm adapter version. The adapter forwards to the same Python CLI shipped by the standalone installer, so Python 3.11 or newer and Git are still required. This install mode provides the `wt` command to npm scripts and `npx --no-install`; it does not modify shell startup files. Use the standalone installer when you want the bash, zsh, or fish shell wrapper for interactive `cd` behavior.
-
-Each versioned merge to `main` can publish the package and create a matching GitHub Release after the repository's release setup is complete. See [RELEASING.md](docs/RELEASING.md) for the one-time setup and release contract.
-
-### Update a standalone installation
-
-The standalone installation updates from the latest stable GitHub Release:
+To load it in future shells, source the generated wrapper from a profile:
 
 ```bash
-wt update --check
-wt update
+source ~/.config/wt/wt.sh
 ```
 
-The update verifies the release checksums and downloaded payloads before replacing the CLI and installed shell wrappers. This includes the Fish wrapper when it is present. npm-managed installations belong to the consumer project's dependency graph, so update those with:
+### Zsh
 
-```bash
-npm update --save-dev @absolutepraya/wt
+```zsh
+eval "$(~/.local/bin/wt shell-init zsh)"
 ```
 
-The source checkout itself is never modified by `wt update`.
+The Bash and Zsh initializer output is shell-compatible. A future Zsh can source the same wrapper:
 
-### Fish shell
+```zsh
+source ~/.config/wt/wt.sh
+```
 
-Add to `~/.config/fish/config.fish`:
+### Fish
+
+```fish
+~/.local/bin/wt shell-init fish | source
+```
+
+For future Fish shells:
 
 ```fish
 source ~/.config/wt/wt.fish
 ```
 
-The standalone installer places the wrapper at `~/.config/wt/wt.fish` and
-`wt update` keeps it current with the CLI.
+### PowerShell
 
-### Requirements
+```powershell
+Invoke-Expression (& wt shell-init powershell)
+```
 
-- Python 3.11 or newer (uses `tomllib`)
-- `git` 2.5+ (worktree support)
-- bash, zsh, or fish
+Add that line to the PowerShell profile yourself if it should load in future sessions. WT never edits a PowerShell profile automatically.
+
+The shell wrapper consumes WT's `__cd__:<path>` navigation sentinel for `wt new --cd` and `wt cd`. A child process cannot change the working directory of its parent shell, so running a raw executable as a subprocess cannot navigate the calling shell. Coding agents should use `wt new` without `--cd`, then use the absolute worktree path printed by WT for subsequent commands.
 
 ## Quick start
 
-In a git repo:
+In a Git repository, create `.wt/config.toml` once if the project is not already configured:
 
 ```bash
-# Drop a minimal config (one-time)
-mkdir -p .wt && cat > .wt/config.toml <<'EOF'
+mkdir -p .wt
+cat > .wt/config.toml <<'EOF'
 worktree_path = ".worktrees"
 port_offset_interval = 100
 max_slots = 9
 EOF
 
-# Create your first worktree
 wt new
 ```
 
 ## Commands
 
-```
-wt --version                    # print the installed wt version
-wt new                          # auto-named worktree off origin/main, runs setup, stays put
-wt new --cd                     # create, then enter it in an interactive shell
-wt new my-fix                   # explicit worktree name
-wt new -b you/feat/X-123        # explicit branch (auto dir name)
-wt new my-fix -b you/feat/X-123 # explicit name + branch
-wt new --from feature-x         # check out an existing remote branch (review workflow)
-wt new --skip-setup             # create the worktree but skip the project's setup script
+```text
+wt --version, -V                print the installed WT version
+wt --help, -h                   show top-level help
 
-wt ls                           # list worktrees with slot/name/branch/path/ports
-wt cd                           # cd to the main worktree
-wt cd <name>                    # cd to an existing worktree
+wt new                          create a worktree from origin/main
+wt new [name]                   choose a worktree name
+wt new -b user/feature          choose the branch name
+wt new --from feature-x         base on an existing remote branch
+wt new --no-setup               skip configured setup commands
+wt new --skip-setup             alias for --no-setup
+wt new --cd                     navigate the interactive shell after creation
 
-wt update                       # update an installed standalone wt
-wt update --check               # check for a stable update without changing files
+wt ls                           list managed and unmanaged Git worktrees
+wt list                         alias for ls
+wt cd                           print the current or main worktree path
+wt cd <name>                    print a named worktree path
 
-wt rm <name>                    # teardown + remove + free slot + delete branch
-wt rm <name> --force            # bypass dirty / unmerged checks
-wt rm <name> --keep-branch      # keep the branch when removing the worktree
-```
+wt rm <name>                    run teardown and remove the worktree
+wt remove <name>                alias for rm
+wt rm <name> --force            bypass dirty, unmerged, and teardown failures
+wt rm <name> --keep-branch      remove the worktree but preserve its branch
 
-Run `wt <command> -h` for full per-command help.
-
-## What it looks like
-
-### `wt ls`
-
-The worktree you're currently inside is marked with a green `✓` next to its slot number. Worktrees git knows about but `wt` doesn't manage are listed in a separate section.
-
-```
-╔══════╤═════════════╤═══════════════════════╤════════════════════════╤═══════╗
-║ SLOT │ NAME        │ BRANCH                │ PATH                   │ PORTS ║
-╟──────┼─────────────┼───────────────────────┼────────────────────────┼───────╢
-║ 0    │ (main)      │ main                  │ .                      │ base  ║
-║ 1    │ paris       │ you/eng-415-runtime   │ .worktrees/paris       │ +100  ║
-║ 2 ✓  │ strasbourg  │ you/merchant-mgmt     │ .worktrees/strasbourg  │ +200  ║
-║ 3    │ new-orleans │ you/mobile-ui-polish  │ .worktrees/new-orleans │ +300  ║
-╠══════╧═════════════╧═══════════════════════╧════════════════════════╧═══════╣
-║                              Unmanaged worktrees                            ║
-╠══════╤═════════════╤═══════════════════════╤════════════════════════╤═══════╣
-║      │             │ you/old-experiment    │ .worktrees/auckland    │       ║
-╚══════╧═════════════╧═══════════════════════╧════════════════════════╧═══════╝
+wt update                       update a standalone installation
+wt update --check               check the latest stable release for standalone installs
+wt shell-init bash              print Bash integration
+wt shell-init zsh               print Zsh integration
+wt shell-init fish              print Fish integration
+wt shell-init powershell        print PowerShell integration
 ```
 
-### `wt new`
-
-Creates the worktree, prints a status block, then runs each `setup` command from `.wt/config.toml` in order — every step gets its own divider and `[i/N]` label so you can tell which one's running.
-
-```
-$ wt new
-══════════════════════════════════════════════════════════════════
-Creating worktree
-  name    rotterdam
-  branch  you/rotterdam
-  base    origin/main
-  path    /home/you/code/myrepo/.worktrees/rotterdam
-  slot    3
-══════════════════════════════════════════════════════════════════
-[1/3] setup: pnpm install --frozen-lockfile
-
-Lockfile is up to date, resolution step is skipped
-Packages: +1247
-...
-Done in 12.3s
-
-══════════════════════════════════════════════════════════════════
-[2/3] setup: cp .env.example .env.local
-
-══════════════════════════════════════════════════════════════════
-[3/3] setup: bash scripts/start-infra.sh
-
-🐳 Starting Postgres on port 5732 (base 5432 + offset 300)…
-🐳 Starting Redis on port 6679 (base 6379 + offset 300)…
-✓ Infra ready
-
-══════════════════════════════════════════════════════════════════
-Created worktree: rotterdam
-  branch  you/rotterdam
-  base    origin/main
-  path    /home/you/code/myrepo/.worktrees/rotterdam
-  slot    3 (port offset +300 to +399)
-══════════════════════════════════════════════════════════════════
-```
-
-By default your shell stays where it is. Add `--cd` when you are working interactively and want the shell wrapper to enter `.worktrees/rotterdam` after creation.
-
-### `wt rm`
-
-Symmetric to `wt new`: runs every `teardown` command, then removes the worktree, deletes the branch, and frees the slot.
-
-```
-$ wt rm rotterdam
-══════════════════════════════════════════════════════════════════
-Removing worktree
-  name    rotterdam
-  branch  you/rotterdam
-  path    /home/you/code/myrepo/.worktrees/rotterdam
-  slot    3
-══════════════════════════════════════════════════════════════════
-[1/2] teardown: docker compose -p rotterdam down
-
-[+] Running 3/3
- ✔ Container rotterdam-redis-1     Removed
- ✔ Container rotterdam-postgres-1  Removed
- ✔ Network  rotterdam_default      Removed
-
-══════════════════════════════════════════════════════════════════
-[2/2] teardown: docker network prune -f
-
-Deleted Networks:
-rotterdam_default
-
-══════════════════════════════════════════════════════════════════
-Removed worktree: rotterdam
-  branch  you/rotterdam
-  path    /home/you/code/myrepo/.worktrees/rotterdam
-  slot    3 (freed)
-══════════════════════════════════════════════════════════════════
-```
-
-If the branch has unmerged commits not in `origin/main` and not pushed anywhere, `wt rm` prompts before deleting — pass `--force` to skip the prompt or `--keep-branch` to remove the worktree but keep the branch.
+Run `wt <command> --help` or `wt <command> -h` for command-specific usage.
+`wt new` stays in the current directory unless its shell wrapper receives
+`--cd`. `wt update` is only a self-mutating command for a standalone
+installation. For a standalone install, `wt update --check` checks the latest
+stable release without changing files. For npm or source installs, it does not
+check the release service. It only prints guidance to update through npm or
+Git. Use `npm update` for npm installations and Git for a source checkout.
 
 ## Configuration
 
-Per-project config lives at `<repo>/.wt/config.toml`:
+Configuration is discovered upward from the current directory at `<repo>/.wt/config.toml`:
 
 ```toml
-# Where worktrees go (relative to repo root).
 worktree_path = ".worktrees"
-
-# Each non-main worktree gets a slot 1..max_slots and a port offset
-# of `slot * port_offset_interval`. Slot 1 → +100, slot 2 → +200, etc.
-# Pick an interval larger than the number of ports any single worktree
-# needs — 100 is a sensible default.
 port_offset_interval = 100
 max_slots = 9
-
-# Optional: auto-naming strategy. Defaults to "cities".
-#   "cities"     → paris, strasbourg, new-orleans, kyoto, ...
-#   "word_pairs" → curious-otter, brave-spruce, ...
-name_strategy = "cities"
-
-# Optional: branch name template for `wt new` (no -b given).
-# Placeholders: {name} (worktree dir name), {user} ($USER), {date} (YYYY-MM-DD).
+name_strategy = "cities"              # or "word_pairs"
 branch_template = "{user}/{name}"
-
-# Optional: base ref for new branches. Default "origin/main".
 default_base = "origin/main"
 
-# Optional: commands run on `wt new`, in order. Each one gets a
-# divider and a "[i/N] setup: <cmd>" label in the output.
 setup = [
   "pnpm install --frozen-lockfile",
   "cp .env.example .env.local",
   "bash scripts/start-infra.sh",
 ]
 
-# Optional: commands run on `wt rm`, in order.
 teardown = [
   "docker compose -p ${WT_WORKSPACE_NAME} down",
   "docker network prune -f",
 ]
 ```
 
-### Per-worktree environment variables
+`worktree_path` must remain inside the repository. Each non-main worktree gets the first free slot from `1` through `max_slots` and a port base of `slot * port_offset_interval`. `default_base` defaults to `origin/main`. Setup and teardown arrays run in order from the worktree directory through the platform shell.
 
-Every `setup` and `teardown` command runs with these env vars set, so your scripts can derive ports, project names, etc. without hardcoding:
+### Setup and teardown environment
 
-| Variable             | Example                                  |
-| -------------------- | ---------------------------------------- |
-| `WT_ROOT_PATH`       | `/home/you/code/myrepo`                  |
-| `WT_WORKSPACE_NAME`  | `rotterdam`                              |
-| `WT_WORKSPACE_PATH`  | `/home/you/code/myrepo/.worktrees/rotterdam` |
-| `WT_BRANCH`          | `you/rotterdam`                          |
-| `WT_SLOT`            | `3`                                      |
-| `WT_PORT_BASE`       | `300` (= slot × `port_offset_interval`)  |
+Every configured setup and teardown command receives these values without modifying the parent process environment:
 
-Example: bind your Postgres to `$((5432 + WT_PORT_BASE))` in your start-infra script and every worktree gets its own non-colliding port.
+| Variable | Example | Purpose |
+| --- | --- | --- |
+| `WT_ROOT_PATH` | `/home/you/code/myrepo` | Main worktree root |
+| `WT_WORKSPACE_NAME` | `rotterdam` | Worktree name |
+| `WT_WORKSPACE_PATH` | `/home/you/code/myrepo/.worktrees/rotterdam` | Absolute worktree path |
+| `WT_BRANCH` | `you/rotterdam` | Live branch name |
+| `WT_SLOT` | `3` | Allocated slot |
+| `WT_PORT_BASE` | `300` | Slot times `port_offset_interval` |
 
-## Safety
+For example, a service using port `5432` can bind to `5432 + WT_PORT_BASE` in its setup script.
 
-- **Dirty worktree**: `wt rm` prompts unless `--force` is given.
-- **Unmerged commits**: `wt rm` prompts if the branch has commits not in `origin/main` and not pushed to a remote.
-- **cwd inside target**: `wt rm` refuses if you're sitting in the worktree you're trying to remove (so your shell doesn't end up in a phantom directory).
-- **Partial setup failure**: if a `setup` command fails (or you Ctrl-C mid-setup), the worktree is rolled back automatically — no half-baked directories.
-- **Concurrent `wt new`**: name + slot allocation happens under an `flock`, so two parallel calls can't pick the same slot or name.
-- **Live branch detection**: `wt rm` checks the branch actually checked out in the worktree right now, not whatever `wt new` originally created — so checking out a different branch into a worktree and then removing it still cleans up the right ref.
+## State, concurrency, and safety
 
-## How it works (one paragraph)
+WT stores one JSON state file per project under `~/.wt`. It records the project root and managed slot entries, including the name, branch, relative path, base ref, remote tracking state, creation time, and a generation token. State writes are validated and replaced atomically. A project lock serializes slot allocation and destructive state changes.
 
-`wt` is a thin layer over `git worktree`. It keeps a per-project state file under `~/.wt/<project-id>/state.json` mapping slots to worktrees, and uses `flock` for concurrency. `wt new` does `git fetch` → reserve a slot → `git worktree add` → run setup. `wt rm` runs teardown → safety checks → `git worktree remove` → `git branch -D` → free the slot. `wt cd` and `wt new --cd` print a `__cd__:<path>` sentinel line that the shell wrapper consumes to actually `cd` your shell.
+- `wt new` fetches the configured base, allocates a slot, creates the Git worktree, persists state, and then runs setup.
+- If setup fails or is interrupted, WT rolls back the newly created worktree and branch while preserving replacement state if another operation has taken ownership.
+- `wt new` is safe to run concurrently. Slot and name allocation are protected by the project lock.
+- `wt rm` refuses to remove the worktree containing the current directory.
+- `wt rm` checks the live branch and worktree identity again after teardown, so a replacement cannot be removed accidentally.
+- Dirty worktrees and branches with unmerged commits require confirmation. `--force` bypasses those checks. `--keep-branch` removes only the worktree.
+- A worktree known to Git but not to WT appears as unmanaged in `wt ls`; remove it with Git rather than `wt rm`.
+- A stale or incompatible state entry is reported and is not silently destroyed.
+
+## Releases and updates
+
+`package.json` is the release version source of truth. CI injects that version into `dist/wt.cjs`, then uses the same bytes for npm and standalone distribution. A stable release has the tag `vX.Y.Z` and these exact assets:
+
+```text
+wt
+wt.sh
+wt.fish
+install.sh
+absolutepraya-wt-X.Y.Z.tgz
+checksums.txt
+```
+
+The checksum manifest covers the other five assets. The installer and `wt update` accept only stable `vX.Y.Z` releases, validate the expected release URLs, verify every downloaded checksum, and check the Node shebang and embedded version before replacement. The standalone installer stages its files, runs a direct `--version` and `--help` smoke on the installed executable, and rolls back if installation or that smoke fails. `wt update` uses its existing transactional replacement behavior for the standalone executable, wrappers, and metadata, with rollback on replacement failure; it does not currently run the post-install smoke. See [docs/RELEASING.md](docs/RELEASING.md) for Trusted Publishing and release recovery.
+
+### One-time migration from Python standalone 0.3.x
+
+Python-based standalone users on the 0.3.x line should run the new installer once:
+
+```bash
+curl -fsSL https://github.com/absolutepraya/wt/releases/latest/download/install.sh | bash
+```
+
+The installer replaces the old standalone executable and wrappers with the Node-based release after validation. It requires Node.js 18 or newer and Git. No `WT_REF` setting is needed for ordinary installs. Start a new shell, or refresh the current shell using the shell-init examples above, then confirm with `wt --version`.
 
 ## For AI coding agents
 
-If you use Claude Code, Codex, Cursor, OpenCode, or a similar agent, this repo ships an Agent Skill at `skills/wt/SKILL.md` that teaches the agent how and when to use `wt` instead of raw `git worktree add`.
+This repository ships an Agent Skill at [`skills/wt/SKILL.md`](skills/wt/SKILL.md). It teaches agents when to use WT instead of raw Git worktree commands and how to preserve project safety.
 
-Install it with the [Vercel Skills CLI](https://github.com/vercel-labs/skills):
+Install the skill with the [Vercel Skills CLI](https://github.com/vercel-labs/skills):
 
 ```bash
-# Install the wt skill for detected agents in the current project.
 npx skills add absolutepraya/wt --skill wt
-
-# Or install it globally for one agent.
 npx skills add absolutepraya/wt --skill wt --global --agent codex
 ```
 
-The CLI discovers `skills/wt/SKILL.md` directly and uses symlinks by default, so `npx skills update` can refresh it later. Coding agents should use `wt new` without `--cd`: a subprocess cannot change the agent host's working directory.
-
-### Manual installation
-
-To install it:
-
-```bash
-# Pick one — wherever your agent reads skills from
-mkdir -p ~/.claude/skills && ln -s "$PWD/skills/wt" ~/.claude/skills/wt              # Claude Code
-mkdir -p ~/.config/opencode/skills && ln -s "$PWD/skills/wt" ~/.config/opencode/skills/wt   # OpenCode
-mkdir -p ~/.codex/skills && ln -s "$PWD/skills/wt" ~/.codex/skills/wt                # Codex
-mkdir -p ~/.cursor/skills && ln -s "$PWD/skills/wt" ~/.cursor/skills/wt              # Cursor
-```
-
-Or copy the directory into your agent's skill folder. After that, ask your agent "create a worktree for X" — it'll invoke the `wt` skill and use the CLI correctly (config check, safety prompts, env vars passed to setup scripts, etc.).
+Agents should use `wt new` without `--cd`. The successful output contains the worktree path to use for subsequent commands because a child process cannot change the agent host's working directory.
 
 ## Development
-
-The npm package smoke test requires Node.js 18 or newer and npm, in addition to Python 3.11 or newer.
 
 ```bash
 git clone https://github.com/absolutepraya/wt
 cd wt
-pip install pytest pytest-mock
-pytest tests/
-bash scripts/check-npm-package.sh
+npm ci
+npm test
+npm run check
+npm run pack:check
+npm run smoke:npm
+bash -n install.sh
+bash scripts/check-installer.sh
+git diff --check
 ```
 
-Tests use real git repos (no mocks for `git`) and run on Python 3.11, 3.12, and 3.13 across macOS and Linux in CI.
+The CI matrix runs Node 18, 20, 22, and 24 on Ubuntu, macOS, and Windows. POSIX installer tests run on Unix runners; Windows validates the cross-platform Node package and shell initializer.
 
 ## License
 

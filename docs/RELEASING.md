@@ -1,94 +1,127 @@
-# Releasing wt
+# Releasing WT
 
-The package version in `package.json` is the release source of truth. The
-`VERSION` constant in `bin/wt` must match it. CI checks this before running a
-release.
+`package.json` is the only release version source of truth. For a stable
+version `X.Y.Z`, CI must produce:
 
-## One-time npm setup
+- `dist/wt.cjs` with the embedded version `X.Y.Z`;
+- npm package `@absolutepraya/wt@X.Y.Z`; and
+- Git tag `vX.Y.Z`.
 
-The release workflow uses npm Trusted Publishing with GitHub Actions OIDC. No
-`NPM_TOKEN` or GitHub personal access token belongs in the repository.
+The release job builds `dist/wt.cjs` once and reuses those bytes for the npm
+package and standalone `wt` asset.
 
-The npm package must exist before its package settings can have a trusted
-publisher. If `@absolutepraya/wt` has not been published yet, seed the first
-version from a trusted local machine after this release PR is merged:
+## One-time npm Trusted Publishing setup
 
-```bash
-npm login
-npm publish --access public
-npm logout
-```
+Configure the public `@absolutepraya/wt` package at npmjs.com. Do not add npm
+tokens, personal access tokens, or other credentials to the repository or
+GitHub Actions secrets.
 
-Run those commands from the merged `main` checkout, and verify that the
-published version is the version in `package.json`. The local npm credential is
-only for this one-time bootstrap. It is not used by CI.
-
-Then, while signed in to the npm account that owns the `@absolutepraya` scope:
-
-1. Open the package settings for `@absolutepraya/wt` on npmjs.com.
-2. Open the `Trusted Publisher` section and choose `GitHub Actions`.
-3. Set the organization or user to `absolutepraya`.
+1. Open the package settings and choose `Trusted Publisher`.
+2. Select `GitHub Actions`.
+3. Set the owner or organization to `absolutepraya`.
 4. Set the repository to `wt`.
-5. Set the workflow filename to `ci.yml`. Enter only the filename, not the
-   `.github/workflows/` path.
-6. Leave the environment name blank.
-7. Allow the `npm publish` action and save the configuration.
+5. Set the workflow filename to `ci.yml`, without `.github/workflows/`.
+6. Leave the environment name blank unless the workflow is deliberately
+   changed to use one.
+7. Save the publisher configuration.
 
-The release job grants itself `id-token: write` for npm OIDC and
-`contents: write` for tags and GitHub Releases. If GitHub rejects the write
-permission, check the repository's Actions workflow permission setting and
-allow the repository workflow to use its write token.
+The release job uses GitHub Actions OIDC. Its write permissions are limited
+to `id-token: write` for npm authentication and `contents: write` for the
+release tag and GitHub Release. The test jobs use read-only contents access.
 
-After the trusted publisher is configured, a push to `main` runs the release
-job automatically. If the first release run failed while the package or trust
-relationship was being configured, rerun the workflow against `main`:
+## Release preparation
 
-```bash
-gh workflow run ci.yml --ref main
+1. Change only `version` in `package.json` to a stable `X.Y.Z` value.
+2. Run the local release checks:
+
+   ```bash
+   npm ci
+   npm run check
+   npm run check-version -- --print
+   npm run check-version -- --tag vX.Y.Z
+   npm test
+   npm run pack:check
+   npm run smoke:npm
+   node scripts/build-release.mjs
+   bash -n install.sh
+   bash scripts/check-installer.sh
+   git diff --check
+   ```
+
+3. Review the generated release directory and merge the version change to
+   `main`.
+
+Do not run `npm publish`, create release tags, or create GitHub Releases from a
+feature branch. The merged-main workflow performs those actions.
+
+## Automated flow
+
+The workflow runs Node 18, 20, 22, and 24 on `ubuntu-latest`, `macos-latest`,
+and `windows-latest`. POSIX installer tests run on Unix runners. The release
+job starts only after every matrix job passes and only when a push changes the
+package version, or when a workflow dispatch explicitly retries `main`.
+
+The release job checks out the immutable event commit, installs dependencies,
+builds and checks the release directory, verifies the package version and tag,
+then publishes through Trusted Publishing and creates or verifies the matching
+GitHub Release.
+
+## Exact asset contract
+
+Each stable GitHub Release contains exactly:
+
+```text
+wt
+wt.sh
+wt.fish
+install.sh
+absolutepraya-wt-X.Y.Z.tgz
+checksums.txt
 ```
 
-Trusted Publishing automatically creates npm provenance for this public
-repository and public package. The workflow therefore does not need a
-long-lived npm token or a separate provenance flag.
+`wt` is the same `dist/wt.cjs` content packaged by npm. `wt.sh` is the Bash
+and Zsh wrapper, and `wt.fish` is the Fish wrapper. `install.sh` is the
+macOS/Linux bootstrap. The tarball is the output of `npm pack`. The checksum
+manifest contains one SHA-256 entry for every other asset.
 
-## Release contract
+## Idempotency and recovery
 
-For a new release:
+A `main` push with no package version change skips the release. The release
+job is serialized so concurrent release attempts do not race. If the requested
+npm version already exists, CI compares its integrity hash with the locally
+built tarball and reuses it only when they match. If a matching GitHub Release
+already has the exact asset names and checksums, CI reuses it without uploading
+duplicates. A same-version package, tag target, asset list, or asset hash
+conflict fails closed and requires an explicit version decision.
 
-1. Update `package.json` and `bin/wt` to the same stable `X.Y.Z` version.
-2. Add the user-facing changes to `CHANGELOG.md`.
-3. Run `python scripts/check-version.py`, `pytest -q tests/`, and the npm checks.
-4. Merge the release PR to `main`.
+After Trusted Publishing setup is complete, retry the failed workflow or
+dispatch it against `main`. Do not bypass the release gates with a local
+publish.
 
-The release job then:
+## Standalone installer and update guarantees
 
-- verifies the shared version and stable tag shape;
-- builds the npm tarball, standalone CLI, Bash and Fish shell wrappers, and checksums;
-- publishes the npm version if it is not already present;
-- creates or verifies `vX.Y.Z` without rewriting an existing tag;
-- creates or updates the matching GitHub Release with generated notes and
-  release assets.
-
-The workflow is idempotent for a partially completed release. It does not
-publish a version that is already on npm, and it never moves a tag that already
-belongs to another main commit. Later main pushes that keep the same version
-are successful no-ops. `workflow_dispatch` is available for a safe rerun after
-setup or a transient failure.
-
-## Historical v0.3.0 release
-
-The existing `v0.3.0` tag predates this automation. Its historical GitHub
-Release has now been created without rewriting the tag, and intentionally has
-no automated asset contract. Future releases use the automated flow above.
-
-For reference, the one-time command was:
+The supported standalone command is:
 
 ```bash
-gh release create v0.3.0 \
-  --verify-tag \
-  --title "v0.3.0" \
-  --generate-notes
+curl -fsSL https://github.com/absolutepraya/wt/releases/latest/download/install.sh | bash
 ```
 
-The automated asset contract starts with the next version released from
-`main`.
+It requires Node.js 18 or newer and Git, supports macOS and Linux, resolves a
+stable release, validates expected GitHub or approved release CDN redirects,
+verifies `checksums.txt`, checks the Node shebang and embedded version, and
+performs a direct version/help smoke after installation. It stages the
+executable, wrappers, and metadata privately. A replacement or smoke failure
+rolls back the previous files when possible; if rollback fails, recovery
+artifacts are retained and the installer exits nonzero.
+
+`wt update` uses the same stable release and checksum contract for an existing
+standalone installation. npm global and local installations update through
+npm. Source checkouts update through Git.
+
+## Migration from historical Python standalone 0.3.x
+
+A user who installed the historical Python-based standalone 0.3.x release must
+run the new installer once. It replaces the old executable and shell wrappers
+after validation, requires Node.js 18+ and Git, and does not require `WT_REF`
+for the normal command. Start a new shell or evaluate the appropriate
+`wt shell-init` output, then confirm with `wt --version`.

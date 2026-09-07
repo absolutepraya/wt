@@ -2,29 +2,27 @@
 
 ## Unreleased
 
-- Added `wt --version` and `wt -V` to report the installed CLI version.
-- Added `wt update` and `wt update --check` for checksum-verified updates of standalone installations from stable GitHub Releases.
-- Added release assets for the standalone CLI, Bash and Fish shell wrappers, npm tarball, and SHA-256 checksums.
-- Added CI release automation that publishes new package versions and creates matching GitHub Releases after all checks pass.
-- Added npm Trusted Publishing and GitHub Actions permission guidance for tokenless release authentication.
-- Renamed the npm package to `@absolutepraya/wt` and prepared patch release `0.3.1` for the account-owned scope.
-- `wt new` now stays in the current directory by default. Pass `--cd` to opt into interactive-shell navigation after creating the worktree.
-- Documented Vercel Skills CLI installation: `npx skills add absolutepraya/wt --skill wt`.
-- Added npm package metadata and a cross-platform Node launcher for project-local installs as `@absolutepraya/wt`.
-- Added package checks that verify the npm binary forwards to the existing Python CLI.
-- Added a separate CI npm matrix that validates the packed artifact in a fresh consumer project.
+- Unified the Node.js CLI across standalone, global npm, and project-local npm
+  installations using one bundled artifact.
+- Added global and local npm support without shell profile mutation.
+- Added Bash, Zsh, Fish, and PowerShell shell-init output for cross-platform
+  interactive navigation.
+- Added a release-based macOS/Linux installer with checksum validation and
+  rollback, plus standalone-only `wt update`.
+- Added a one-time migration path for historical Python-based standalone 0.3.x
+  installations.
+- Added merged-main CI publication through npm Trusted Publishing and matching
+  GitHub Release assets.
 
-## v0.1.0 — initial release
+## Historical v0.1.0
 
-First public release of `wt`. Single-file Python CLI, stdlib only.
+The initial public release used a single-file Python CLI with standard-library
+dependencies. It introduced:
 
-- `wt new` — create a worktree, run per-project setup scripts, auto-cd.
-- `wt ls` — list worktrees with slot, branch, port offset, and a `✓` marker on the one you're inside.
-- `wt cd` — jump into a worktree (or back to main with `wt cd` / `wt cd main`).
-- `wt rm` — run teardown, remove worktree, free slot, delete branch.
-- Per-project `.wt/config.toml` with `setup`/`teardown` shell-command arrays.
-- Per-worktree env vars (`WT_ROOT_PATH`, `WT_WORKSPACE_NAME`, `WT_WORKSPACE_PATH`, `WT_BRANCH`, `WT_SLOT`, `WT_PORT_BASE`).
+- `wt new`, `wt ls`, `wt cd`, and `wt rm` for managed Git worktrees.
+- Per-project `.wt/config.toml` with setup and teardown command arrays.
+- Per-worktree environment variables for paths, branches, slots, and ports.
 - City-name and word-pair auto-naming strategies.
-- Concurrency-safe slot allocation via `flock`.
-- Safety: dirty-tree and unmerged-commits checks on `rm`; cwd-inside-target guard; partial-worktree rollback on setup failure.
-- Bash, zsh, and fish shell wrappers for auto-cd on `new`/`cd`.
+- Concurrency-safe slot allocation and dirty-tree, unmerged-commit, and
+  partial-setup safety checks.
+- Bash, Zsh, and Fish wrappers for shell navigation.
