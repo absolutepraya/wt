@@ -11,11 +11,11 @@ import { latestStableRelease, parseChecksums, parseStableVersion, runUpdate, val
 import type { CliContext } from "../src/types.js";
 
 const RELEASE_API = "https://api.example.test/releases/latest";
-const TAG = "v0.3.2";
+const TAG = "v0.3.3";
 const RELEASE_ROOT = `https://github.com/absolutepraya/wt/releases/download/${TAG}`;
 
 function digest(value: Buffer): string { return createHash("sha256").update(value).digest("hex"); }
-function payloads(version = "0.3.2"): Map<string, Buffer> {
+function payloads(version = "0.3.3"): Map<string, Buffer> {
   const result = new Map<string, Buffer>([
     ["wt", Buffer.from(`#!/usr/bin/env node\nconst VERSION = \"${version}\";\nconsole.log(VERSION);\n`)],
     ["wt.sh", Buffer.from("wt() { command wt \"$@\"; }\n")],
@@ -66,7 +66,7 @@ test("stable release parsing rejects prerelease forms and malformed release meta
   assert.equal(parseStableVersion("1.2.3+build.1"), null);
   await assert.rejects(() => latestStableRelease(RELEASE_API, (async () => release([], { draft: true })) as typeof fetch), /stable release/);
   await assert.rejects(() => latestStableRelease(RELEASE_API, (async () => release([], { prerelease: true })) as typeof fetch), UpdateError);
-  await assert.rejects(() => latestStableRelease(RELEASE_API, (async () => release([], { tag_name: "release-0.3.2" })) as typeof fetch), /stable vX.Y.Z/);
+  await assert.rejects(() => latestStableRelease(RELEASE_API, (async () => release([], { tag_name: "release-0.3.3" })) as typeof fetch), /stable vX.Y.Z/);
   await assert.rejects(() => latestStableRelease(RELEASE_API, (async () => release([], { tag_name: "v1.2.3-beta.1" })) as typeof fetch), /stable vX.Y.Z/);
   await assert.rejects(() => latestStableRelease(RELEASE_API, (async () => new Response(JSON.stringify({ draft: false, prerelease: false, assets: [] }))) as typeof fetch), /no tag/);
   await assert.rejects(() => latestStableRelease(RELEASE_API, (async () => release(["wt", "wt.sh", "wt.fish"])) as typeof fetch), /missing update assets/);
@@ -80,9 +80,9 @@ test("checksum and embedded Node payload validation are strict", () => {
   const checksums = parseChecksums(`${"a".repeat(64)}  wt\n${"b".repeat(64)} *wt.sh\ninvalid\n`);
   assert.equal(checksums.get("wt"), "a".repeat(64));
   assert.equal(checksums.get("wt.sh"), "b".repeat(64));
-  validateCliPayload(payloads().get("wt")!, "0.3.2");
-  assert.throws(() => validateCliPayload(Buffer.from("#!/usr/bin/env python3\nconst VERSION = '0.3.2';\n"), "0.3.2"), /interpreter header/);
-  assert.throws(() => validateCliPayload(payloads("0.3.1").get("wt")!, "0.3.2"), /version does not match/);
+  validateCliPayload(payloads().get("wt")!, "0.3.3");
+  assert.throws(() => validateCliPayload(Buffer.from("#!/usr/bin/env python3\nconst VERSION = '0.3.3';\n"), "0.3.3"), /interpreter header/);
+  assert.throws(() => validateCliPayload(payloads("0.3.2").get("wt")!, "0.3.3"), /version does not match/);
 });
 
 test("standalone update verifies every payload before replacing any installed file", async () => {
@@ -119,17 +119,17 @@ test("standalone update accepts the expected signed GitHub release CDN redirect"
     return new Response(new Uint8Array(downloaded.get(name)!));
   }) as typeof fetch;
   await runUpdate(context(), false, { apiUrl: RELEASE_API, fetchImpl: redirectingFetch, executablePath: fixture.executable, configDir: fixture.configDir, now: () => new Date() });
-  assert.match(readFileSync(fixture.executable, "utf8"), /VERSION = "0.3.2"/);
+  assert.match(readFileSync(fixture.executable, "utf8"), /VERSION = "0.3.3"/);
 });
 
 test("standalone update replaces the executable, shell assets, and metadata as one validated set", async () => {
   const fixture = standaloneFixture();
   const output = context();
   await runUpdate(output, false, { apiUrl: RELEASE_API, fetchImpl: fetchFor(payloads()), executablePath: fixture.executable, configDir: fixture.configDir, now: () => new Date("2026-09-04T00:00:00.000Z") });
-  assert.match(readFileSync(fixture.executable, "utf8"), /VERSION = "0.3.2"/);
+  assert.match(readFileSync(fixture.executable, "utf8"), /VERSION = "0.3.3"/);
   assert.match(readFileSync(join(fixture.configDir, "wt.sh"), "utf8"), /command wt/);
   assert.equal(JSON.parse(readFileSync(join(fixture.configDir, "install.json"), "utf8")).tag, TAG);
-  assert.match(output.output(), /Installed version: .*\nLatest stable version: 0.3.2/);
+  assert.match(output.output(), /Installed version: .*\nLatest stable version: 0.3.3/);
   assert.match(output.output(), /Updated wt from/);
 });
 

@@ -13,6 +13,8 @@
   installations.
 - Added merged-main CI publication through npm Trusted Publishing and matching
   GitHub Release assets.
+- Added safe migration for stale empty lock files created by the historical
+  Python standalone CLI.
 
 ## Historical v0.1.0
 

@@ -19,6 +19,7 @@ function writeLock(path: string, token: string, contents = metadata(token), stal
 }
 function removeLock(path: string, token: string): void { unlinkSync(metadataPath(path, token)); rmdirSync(ownerPath(path, token)); rmdirSync(path); }
 function makeStale(path: string): void { const old = new Date(Date.now() - 61_000); utimesSync(path, old, old); }
+function writeLegacyLock(path: string, contents = "", stale = false): void { writeFileSync(path, contents); if (stale) makeStale(path); }
 function deferred(): { promise: Promise<void>; resolve: () => void } { let resolve!: () => void; return { promise: new Promise<void>((done) => { resolve = done; }), resolve }; }
 function waitFor(child: ChildProcess, type: string): Promise<void> {
   return new Promise((resolve, reject) => { const onMessage = (message: unknown) => { if ((message as { type?: string }).type === type) { child.off("message", onMessage); resolve(); } }; child.on("message", onMessage); child.once("error", reject); child.once("exit", (code) => { if (code !== 0) reject(new Error(`worker exited ${code}`)); }); });
@@ -36,6 +37,40 @@ test("serializes child processes after a confirmed in-path contention attempt", 
   const waiter = spawnWorker(path, output, "waiter"); await waitFor(waiter, "before-attempt"); waiter.send({ type: "attempt" }); await waitFor(waiter, "contended");
   holder.send({ type: "release" }); await Promise.all([waitForExit(holder), waitForExit(waiter)]);
   assert.deepEqual(readFileSync(output, "utf8").trim().split("\n"), ["start:holder", "end:holder", "start:waiter", "end:waiter"]);
+});
+
+test("migrates stale legacy regular-file locks and preserves the original", async () => {
+  const path = lockPath(); writeLegacyLock(path, "", true);
+  let acquired = false;
+  await withProjectLock(path, () => { acquired = true; assert.equal(statSync(path).isDirectory(), true); });
+  assert.equal(acquired, true); assert.throws(() => statSync(path), /ENOENT/);
+  const backup = readdirSync(join(path, "..")).find((entry) => entry.startsWith(".project.lock.legacy-"));
+  assert.ok(backup); assert.equal(readFileSync(join(path, "..", backup!), "utf8"), "");
+});
+
+test("does not migrate a fresh legacy regular-file lock", async () => {
+  const path = lockPath(); writeLegacyLock(path);
+  try {
+    await assert.rejects(withProjectLock(path, () => undefined, { timeoutMs: 0 }), (error: unknown) => error instanceof ProjectLockError && error.code === "LOCK_TIMEOUT");
+    assert.equal(statSync(path).isFile(), true);
+  } finally { unlinkSync(path); }
+});
+
+test("rejects non-empty legacy regular-file locks without changing them", async () => {
+  const path = lockPath(); writeLegacyLock(path, "legacy state", true);
+  try {
+    await assert.rejects(withProjectLock(path, () => undefined, { timeoutMs: 0 }), (error: unknown) => error instanceof ProjectLockError && /contains data/.test(error.message));
+    assert.equal(readFileSync(path, "utf8"), "legacy state");
+  } finally { unlinkSync(path); }
+});
+
+test("does not migrate a legacy lock changed during stale recovery", async () => {
+  const path = lockPath(); writeLegacyLock(path, "", true);
+  try {
+    await assert.rejects(withProjectLock(path, () => undefined, { timeoutMs: 0, testHooks: { beforeLegacyLockMigration: () => { writeLegacyLock(path); } } }), (error: unknown) => error instanceof ProjectLockError && error.code === "LOCK_TIMEOUT");
+    assert.equal(statSync(path).isFile(), true);
+    assert.equal(readdirSync(join(path, "..")).some((entry) => entry.startsWith(".project.lock.legacy-")), false);
+  } finally { unlinkSync(path); }
 });
 
 test("recovers stale metadata-less crash windows without removing a successor", async () => {
