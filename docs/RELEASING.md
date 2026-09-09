@@ -125,3 +125,7 @@ run the new installer once. It replaces the old executable and shell wrappers
 after validation, requires Node.js 18+ and Git, and does not require `WT_REF`
 for the normal command. Start a new shell or evaluate the appropriate
 `wt shell-init` output, then confirm with `wt --version`.
+
+The Node CLI also migrates an empty legacy project lock file when it is stale.
+The old file is preserved beside the new directory lock. Non-empty legacy lock
+files are rejected because they cannot be migrated safely without inspection.

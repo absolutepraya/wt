@@ -75,11 +75,11 @@ test("installer resolves one exact tag, honors overrides, and records a standalo
     const result = invoke(bootstrap(root), root, server.baseUrl);
     assert.equal(result.status, 0, result.stderr);
     const binary = join(root, "prefix", "bin", "wt");
-    assert.equal(spawnSync(binary, ["--version"], { encoding: "utf8" }).stdout.trim(), "0.3.2");
+    assert.equal(spawnSync(binary, ["--version"], { encoding: "utf8" }).stdout.trim(), "0.3.3");
     const metadata = JSON.parse(readFileSync(join(root, "config", "install.json"), "utf8"));
-    assert.deepEqual({ channel: metadata.channel, repository: metadata.repository, tag: metadata.tag }, { channel: "standalone", repository: "absolutepraya/wt", tag: "v0.3.2" });
+    assert.deepEqual({ channel: metadata.channel, repository: metadata.repository, tag: metadata.tag }, { channel: "standalone", repository: "absolutepraya/wt", tag: "v0.3.3" });
     const requests = await (await fetch(server.baseUrl + "/requests")).json() as string[];
-    assert.deepEqual(requests.filter((path) => path.startsWith("/download/")), ["/download/v0.3.2/wt", "/download/v0.3.2/wt.sh", "/download/v0.3.2/wt.fish", "/download/v0.3.2/checksums.txt"]);
+    assert.deepEqual(requests.filter((path) => path.startsWith("/download/")), ["/download/v0.3.3/wt", "/download/v0.3.3/wt.sh", "/download/v0.3.3/wt.fish", "/download/v0.3.3/checksums.txt"]);
     assert.match(result.stdout, /Immediate use:\s+'[^'\n]*prefix\/bin\/wt' --version/);
     assert.match(result.stdout, /Current shell cd:.*shell-init bash/);
     assert.match(result.stdout, /shell-init fish \| source/);
@@ -182,7 +182,7 @@ test("installer rejects malicious API and asset redirects, accepts the constrain
   try {
     const result = invoke(bootstrap(root), root, server.baseUrl);
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(spawnSync(join(root, "prefix", "bin", "wt"), ["--version"], { encoding: "utf8" }).stdout.trim(), "0.3.2");
+    assert.equal(spawnSync(join(root, "prefix", "bin", "wt"), ["--version"], { encoding: "utf8" }).stdout.trim(), "0.3.3");
   } finally {
     await server.stop();
     remove(root);
@@ -212,7 +212,7 @@ test("installer supports newer exact-tag fixtures and idempotent shell profile b
     for (const profile of [join(root, "home", ".bashrc"), join(root, "home", ".zshrc"), join(root, "xdg", "fish", "conf.d", "wt.fish")]) {
       assert.equal((readFileSync(profile, "utf8").match(/# wt-managed: BEGIN/g) ?? []).length, 1);
     }
-    assert.equal(JSON.parse(readFileSync(join(root, "config", "install.json"), "utf8")).tag, "v0.3.3");
+    assert.equal(JSON.parse(readFileSync(join(root, "config", "install.json"), "utf8")).tag, "v0.3.4");
   } finally {
     await server.stop();
     remove(root);
@@ -334,7 +334,7 @@ test("local source installation uses dist and reports the exact missing-dist dia
       env: { ...process.env, HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "xdg"), PREFIX: join(root, "prefix"), WT_CONFIG_DIR: join(root, "config") },
     });
     assert.equal(local.status, 0, local.stderr);
-    assert.equal(JSON.parse(readFileSync(join(root, "config", "install.json"), "utf8")).tag, "v0.3.2");
+    assert.equal(JSON.parse(readFileSync(join(root, "config", "install.json"), "utf8")).tag, "v0.3.3");
 
     const incomplete = join(root, "source");
     mkdirSync(incomplete, { recursive: true });

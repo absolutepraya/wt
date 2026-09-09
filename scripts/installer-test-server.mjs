@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 
 const scenario = process.env.WT_INSTALLER_FIXTURE ?? "ok";
 const requests = [];
-const tag = scenario === "newer" ? "v0.3.3" : "v0.3.2";
+const tag = scenario === "newer" ? "v0.3.4" : "v0.3.3";
 const version = tag.slice(1);
 const releaseAssetNames = ["wt", "wt.sh", "wt.fish", "checksums.txt"];
 const assets = new Map([
@@ -25,7 +25,7 @@ const server = createServer((request, response) => {
     if (scenario === "api-error") { response.writeHead(500); response.end("unavailable"); return; }
     if (scenario === "api-redirect-bad") { response.writeHead(302, { location: "http://evil.example/api/latest" }); response.end(); return; }
     if (scenario === "api-redirect-good") { response.writeHead(302, { location: "/api/latest-final" }); response.end(); return; }
-    if (scenario === "malformed-api") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ tag_name: "release-0.3.2", draft: false, prerelease: false, assets: [] })); return; }
+    if (scenario === "malformed-api") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ tag_name: "release-0.3.3", draft: false, prerelease: false, assets: [] })); return; }
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify({ tag_name: tag, draft: false, prerelease: false, assets: scenario === "missing-api-assets" ? [] : releaseAssets() }));
     return;

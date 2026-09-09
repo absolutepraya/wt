@@ -1,4 +1,4 @@
-import { mkdir, open, readdir, readFile, rename, rmdir, stat, unlink, utimes } from "node:fs/promises";
+import { link, mkdir, open, readdir, readFile, rename, rmdir, stat, unlink, utimes } from "node:fs/promises";
 import { hostname } from "node:os";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
@@ -10,12 +10,16 @@ export class ProjectLockError extends Error {
 }
 
 interface LockMetadata { pid: number; hostname: string; token: string; startedAt: string; }
-interface LockSnapshot { ownerDirectory?: string; metadataPath?: string; metadataText?: string; metadata?: LockMetadata; modifiedAt: number; }
+interface LegacyFileIdentity { dev: number; ino: number; }
+interface LockSnapshot { legacyFile?: boolean; legacySize?: number; legacyIdentity?: LegacyFileIdentity; ownerDirectory?: string; metadataPath?: string; metadataText?: string; metadata?: LockMetadata; modifiedAt: number; }
 export interface ProjectLockTestHooks {
   beforeFirstAcquireAttempt?: () => Promise<void> | void;
   afterFirstAcquireContention?: () => Promise<void> | void;
   beforeMetadataWrite?: () => Promise<void> | void;
   beforeStaleCleanup?: () => Promise<void> | void;
+  beforeLegacyLockMigration?: () => Promise<void> | void;
+  afterLegacyLockValidation?: () => Promise<void> | void;
+  overrideLegacyFileIdentity?: (identity: LegacyFileIdentity) => LegacyFileIdentity;
   beforeEmptyLockReplacement?: () => Promise<void> | void;
   beforeOuterRmdir?: () => Promise<void> | void;
   afterRefreshRead?: () => Promise<void> | void;
@@ -31,12 +35,17 @@ const METADATA_FILE = "metadata.json";
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function isMissing(error: unknown): boolean { return isRecord(error) && error.code === "ENOENT"; }
-function isOccupied(error: unknown): boolean { return isRecord(error) && (error.code === "EEXIST" || error.code === "ENOTEMPTY"); }
+function isOccupied(error: unknown): boolean { return isRecord(error) && (error.code === "EEXIST" || error.code === "ENOTEMPTY" || error.code === "ENOTDIR" || error.code === "EISDIR"); }
 function isNotEmpty(error: unknown): boolean { return isRecord(error) && (error.code === "ENOTEMPTY" || error.code === "EEXIST"); }
 function wait(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function ownerDirectory(lockPath: string, token: string): string { return join(lockPath, `${OWNER_PREFIX}${token}`); }
 function metadataPath(lockPath: string, token: string): string { return join(ownerDirectory(lockPath, token), METADATA_FILE); }
 function candidateDirectory(lockPath: string, token: string): string { return join(dirname(lockPath), `.${basename(lockPath)}.${OWNER_PREFIX}${token}.tmp`); }
+function legacyBackupPath(lockPath: string, token: string): string { return join(dirname(lockPath), `.${basename(lockPath)}.legacy-${token}`); }
+function legacyFileIdentity(value: { dev: number; ino: number }): LegacyFileIdentity { return { dev: value.dev, ino: value.ino }; }
+function sameLegacyFileIdentity(current: LegacyFileIdentity, expected: LegacyFileIdentity): boolean {
+  return (current.dev !== 0 || current.ino !== 0) && (expected.dev !== 0 || expected.ino !== 0) && current.dev === expected.dev && current.ino === expected.ino;
+}
 
 class LockContendedError extends Error {}
 
@@ -56,11 +65,18 @@ function ownerIsDead(metadata: LockMetadata): boolean {
   catch (error: unknown) { return !isRecord(error) || error.code === "ESRCH"; }
 }
 
-async function inspectLock(lockPath: string): Promise<LockSnapshot | undefined> {
+async function inspectLock(lockPath: string, hooks?: ProjectLockTestHooks): Promise<LockSnapshot | undefined> {
   let rootMtime: number;
   try {
     const root = await stat(lockPath);
-    if (!root.isDirectory()) throw new ProjectLockError("LOCK_STALE_OWNER", `Project lock ${lockPath} is not a directory.`);
+    if (!root.isDirectory()) {
+      if (root.isFile()) {
+        const actualIdentity = legacyFileIdentity(root);
+        const identity = hooks?.overrideLegacyFileIdentity?.(actualIdentity) ?? actualIdentity;
+        return { legacyFile: true, legacySize: root.size, legacyIdentity: identity, modifiedAt: root.mtimeMs };
+      }
+      throw new ProjectLockError("LOCK_STALE_OWNER", `Project lock ${lockPath} is not a directory.`);
+    }
     rootMtime = root.mtimeMs;
   } catch (error) {
     if (isMissing(error)) return undefined;
@@ -149,14 +165,67 @@ async function removeSnapshot(lockPath: string, snapshot: LockSnapshot): Promise
   }
 }
 
+async function legacyLockUnchanged(lockPath: string, snapshot: LockSnapshot): Promise<boolean> {
+  try {
+    const current = await stat(lockPath);
+    return current.isFile() && current.size === snapshot.legacySize && current.mtimeMs === snapshot.modifiedAt && snapshot.legacyIdentity !== undefined && sameLegacyFileIdentity(legacyFileIdentity(current), snapshot.legacyIdentity);
+  } catch (error) {
+    if (isMissing(error)) return false;
+    throw new ProjectLockError("LOCK_STALE_OWNER", `Unable to inspect legacy project lock ${lockPath}.`, { cause: error });
+  }
+}
+
+async function restoreLegacyLock(lockPath: string, backupPath: string): Promise<boolean> {
+  try {
+    await link(backupPath, lockPath);
+  } catch (error) {
+    if (isOccupied(error)) return false;
+    throw new ProjectLockError("LOCK_STALE_OWNER", `Unable to restore legacy project lock ${lockPath}.`, { cause: error });
+  }
+  await unlink(backupPath).catch(() => undefined);
+  return true;
+}
+
+async function migrateLegacyLock(lockPath: string, candidatePath: string, snapshot: LockSnapshot, token: string, hooks?: ProjectLockTestHooks): Promise<StaleRecovery> {
+  if (snapshot.legacySize !== 0) throw new ProjectLockError("LOCK_STALE_OWNER", `Legacy project lock ${lockPath} contains data and cannot be migrated safely.`);
+  await hooks?.beforeLegacyLockMigration?.();
+  if (!(await legacyLockUnchanged(lockPath, snapshot))) return "none";
+  await hooks?.afterLegacyLockValidation?.();
+  const backupPath = legacyBackupPath(lockPath, token);
+  try { await rename(lockPath, backupPath); }
+  catch (error) {
+    if (isMissing(error) || isOccupied(error)) return "none";
+    throw new ProjectLockError("LOCK_STALE_OWNER", `Unable to preserve legacy project lock ${lockPath}.`, { cause: error });
+  }
+  try {
+    const moved = await stat(backupPath);
+    const movedIdentity = legacyFileIdentity(moved);
+    if (!moved.isFile() || moved.size !== snapshot.legacySize || moved.mtimeMs !== snapshot.modifiedAt || snapshot.legacyIdentity === undefined || !sameLegacyFileIdentity(movedIdentity, snapshot.legacyIdentity)) {
+      await restoreLegacyLock(lockPath, backupPath);
+      return "none";
+    }
+  } catch (error) {
+    if (isMissing(error)) return "none";
+    throw new ProjectLockError("LOCK_STALE_OWNER", `Unable to verify preserved legacy project lock ${lockPath}.`, { cause: error });
+  }
+  try {
+    await rename(candidatePath, lockPath);
+    return "acquired";
+  } catch (error) {
+    if (await renameIsContention(lockPath, error)) return "none";
+    throw new ProjectLockError("LOCK_STALE_OWNER", `Unable to replace legacy project lock ${lockPath}.`, { cause: error });
+  }
+}
+
 type StaleRecovery = "none" | "removed" | "acquired";
 
-async function recoverStaleLock(lockPath: string, candidatePath: string, hooks?: ProjectLockTestHooks): Promise<StaleRecovery> {
-  const snapshot = await inspectLock(lockPath);
+async function recoverStaleLock(lockPath: string, candidatePath: string, token: string, hooks?: ProjectLockTestHooks): Promise<StaleRecovery> {
+  const snapshot = await inspectLock(lockPath, hooks);
   if (!snapshot) return "none";
   if (Date.now() - snapshot.modifiedAt <= STALE_MS) return "none";
   if (snapshot.metadata && !ownerIsDead(snapshot.metadata)) return "none";
   await hooks?.beforeStaleCleanup?.();
+  if (snapshot.legacyFile) return migrateLegacyLock(lockPath, candidatePath, snapshot, token, hooks);
   if (!snapshot.ownerDirectory) {
     await hooks?.beforeEmptyLockReplacement?.();
     if (process.platform === "win32") {
@@ -250,7 +319,7 @@ async function acquireProjectLock(lockPath: string, timeoutMs: number, hooks?: P
       }
       if (firstContention) { firstContention = false; await hooks?.afterFirstAcquireContention?.(); }
       let recovery: StaleRecovery;
-      try { recovery = await recoverStaleLock(lockPath, candidatePath!, hooks); }
+      try { recovery = await recoverStaleLock(lockPath, candidatePath!, token, hooks); }
       catch (recoveryError) {
         if (candidatePath) await cleanupFailedAcquire(lockPath, token);
         throw recoveryError;

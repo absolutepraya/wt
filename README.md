@@ -250,6 +250,7 @@ WT stores one JSON state file per project under `~/.wt`. It records the project 
 - `wt rm` checks the live branch and worktree identity again after teardown, so a replacement cannot be removed accidentally.
 - Dirty worktrees and branches with unmerged commits require confirmation. `--force` bypasses those checks. `--keep-branch` removes only the worktree.
 - A worktree known to Git but not to WT appears as unmanaged in `wt ls`; remove it with Git rather than `wt rm`.
+- An empty stale lock file from the historical Python standalone CLI is migrated once to the Node directory-lock format, with the original preserved as a backup. Non-empty legacy lock files are rejected for manual inspection.
 - A stale or incompatible state entry is reported and is not silently destroyed.
 
 ## Releases and updates

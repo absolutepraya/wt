@@ -1,6 +1,6 @@
 {
   "name": "@absolutepraya/wt",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Universal git worktree CLI for fast, parallel feature work",
   "keywords": [
     "git",
