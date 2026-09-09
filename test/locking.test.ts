@@ -73,6 +73,19 @@ test("does not migrate a legacy lock changed during stale recovery", async () =>
   } finally { unlinkSync(path); }
 });
 
+test("does not replace a legacy lock published after validation", async () => {
+  const path = lockPath(); writeLegacyLock(path, "", true);
+  let callbacks = 0;
+  try {
+    await assert.rejects(withProjectLock(path, () => { callbacks += 1; }, { timeoutMs: 0, testHooks: {
+      afterLegacyLockValidation: () => { unlinkSync(path); writeLegacyLock(path, "replacement"); },
+    } }), (error: unknown) => error instanceof ProjectLockError && error.code === "LOCK_TIMEOUT");
+    assert.equal(callbacks, 0);
+    assert.equal(readFileSync(path, "utf8"), "replacement");
+    assert.equal(readdirSync(join(path, "..")).some((entry) => entry.startsWith(".project.lock.legacy-")), false);
+  } finally { unlinkSync(path); }
+});
+
 test("recovers stale metadata-less crash windows without removing a successor", async () => {
   const empty = lockPath(); mkdirSync(empty); makeStale(empty); await withProjectLock(empty, () => undefined); assert.throws(() => statSync(empty), /ENOENT/);
   const incomplete = lockPath(); mkdirSync(incomplete); mkdirSync(ownerPath(incomplete, "crashed")); makeStale(incomplete); await withProjectLock(incomplete, () => undefined); assert.throws(() => statSync(incomplete), /ENOENT/);

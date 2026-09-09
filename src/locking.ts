@@ -1,4 +1,4 @@
-import { mkdir, open, readdir, readFile, rename, rmdir, stat, unlink, utimes } from "node:fs/promises";
+import { link, mkdir, open, readdir, readFile, rename, rmdir, stat, unlink, utimes } from "node:fs/promises";
 import { hostname } from "node:os";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
@@ -10,13 +10,15 @@ export class ProjectLockError extends Error {
 }
 
 interface LockMetadata { pid: number; hostname: string; token: string; startedAt: string; }
-interface LockSnapshot { legacyFile?: boolean; legacySize?: number; ownerDirectory?: string; metadataPath?: string; metadataText?: string; metadata?: LockMetadata; modifiedAt: number; }
+interface LegacyFileIdentity { dev: number; ino: number; ctimeMs: number; birthtimeMs: number; }
+interface LockSnapshot { legacyFile?: boolean; legacySize?: number; legacyIdentity?: LegacyFileIdentity; ownerDirectory?: string; metadataPath?: string; metadataText?: string; metadata?: LockMetadata; modifiedAt: number; }
 export interface ProjectLockTestHooks {
   beforeFirstAcquireAttempt?: () => Promise<void> | void;
   afterFirstAcquireContention?: () => Promise<void> | void;
   beforeMetadataWrite?: () => Promise<void> | void;
   beforeStaleCleanup?: () => Promise<void> | void;
   beforeLegacyLockMigration?: () => Promise<void> | void;
+  afterLegacyLockValidation?: () => Promise<void> | void;
   beforeEmptyLockReplacement?: () => Promise<void> | void;
   beforeOuterRmdir?: () => Promise<void> | void;
   afterRefreshRead?: () => Promise<void> | void;
@@ -39,6 +41,11 @@ function ownerDirectory(lockPath: string, token: string): string { return join(l
 function metadataPath(lockPath: string, token: string): string { return join(ownerDirectory(lockPath, token), METADATA_FILE); }
 function candidateDirectory(lockPath: string, token: string): string { return join(dirname(lockPath), `.${basename(lockPath)}.${OWNER_PREFIX}${token}.tmp`); }
 function legacyBackupPath(lockPath: string, token: string): string { return join(dirname(lockPath), `.${basename(lockPath)}.legacy-${token}`); }
+function legacyFileIdentity(value: { dev: number; ino: number; ctimeMs: number; birthtimeMs: number }): LegacyFileIdentity { return { dev: value.dev, ino: value.ino, ctimeMs: value.ctimeMs, birthtimeMs: value.birthtimeMs }; }
+function sameLegacyFileIdentity(current: LegacyFileIdentity, expected: LegacyFileIdentity): boolean {
+  if (current.dev !== 0 || current.ino !== 0 || expected.dev !== 0 || expected.ino !== 0) return current.dev === expected.dev && current.ino === expected.ino;
+  return current.ctimeMs === expected.ctimeMs && current.birthtimeMs === expected.birthtimeMs;
+}
 
 class LockContendedError extends Error {}
 
@@ -63,7 +70,7 @@ async function inspectLock(lockPath: string): Promise<LockSnapshot | undefined> 
   try {
     const root = await stat(lockPath);
     if (!root.isDirectory()) {
-      if (root.isFile()) return { legacyFile: true, legacySize: root.size, modifiedAt: root.mtimeMs };
+      if (root.isFile()) return { legacyFile: true, legacySize: root.size, legacyIdentity: legacyFileIdentity(root), modifiedAt: root.mtimeMs };
       throw new ProjectLockError("LOCK_STALE_OWNER", `Project lock ${lockPath} is not a directory.`);
     }
     rootMtime = root.mtimeMs;
@@ -157,22 +164,45 @@ async function removeSnapshot(lockPath: string, snapshot: LockSnapshot): Promise
 async function legacyLockUnchanged(lockPath: string, snapshot: LockSnapshot): Promise<boolean> {
   try {
     const current = await stat(lockPath);
-    return current.isFile() && current.size === snapshot.legacySize && current.mtimeMs === snapshot.modifiedAt;
+    return current.isFile() && current.size === snapshot.legacySize && current.mtimeMs === snapshot.modifiedAt && snapshot.legacyIdentity !== undefined && sameLegacyFileIdentity(legacyFileIdentity(current), snapshot.legacyIdentity);
   } catch (error) {
     if (isMissing(error)) return false;
     throw new ProjectLockError("LOCK_STALE_OWNER", `Unable to inspect legacy project lock ${lockPath}.`, { cause: error });
   }
 }
 
+async function restoreLegacyLock(lockPath: string, backupPath: string): Promise<boolean> {
+  try {
+    await link(backupPath, lockPath);
+  } catch (error) {
+    if (isOccupied(error)) return false;
+    throw new ProjectLockError("LOCK_STALE_OWNER", `Unable to restore legacy project lock ${lockPath}.`, { cause: error });
+  }
+  await unlink(backupPath).catch(() => undefined);
+  return true;
+}
+
 async function migrateLegacyLock(lockPath: string, candidatePath: string, snapshot: LockSnapshot, token: string, hooks?: ProjectLockTestHooks): Promise<StaleRecovery> {
   if (snapshot.legacySize !== 0) throw new ProjectLockError("LOCK_STALE_OWNER", `Legacy project lock ${lockPath} contains data and cannot be migrated safely.`);
   await hooks?.beforeLegacyLockMigration?.();
   if (!(await legacyLockUnchanged(lockPath, snapshot))) return "none";
+  await hooks?.afterLegacyLockValidation?.();
   const backupPath = legacyBackupPath(lockPath, token);
   try { await rename(lockPath, backupPath); }
   catch (error) {
     if (isMissing(error) || isOccupied(error)) return "none";
     throw new ProjectLockError("LOCK_STALE_OWNER", `Unable to preserve legacy project lock ${lockPath}.`, { cause: error });
+  }
+  try {
+    const moved = await stat(backupPath);
+    const movedIdentity = legacyFileIdentity(moved);
+    if (!moved.isFile() || moved.size !== snapshot.legacySize || moved.mtimeMs !== snapshot.modifiedAt || snapshot.legacyIdentity === undefined || !sameLegacyFileIdentity(movedIdentity, snapshot.legacyIdentity)) {
+      await restoreLegacyLock(lockPath, backupPath);
+      return "none";
+    }
+  } catch (error) {
+    if (isMissing(error)) return "none";
+    throw new ProjectLockError("LOCK_STALE_OWNER", `Unable to verify preserved legacy project lock ${lockPath}.`, { cause: error });
   }
   try {
     await rename(candidatePath, lockPath);
