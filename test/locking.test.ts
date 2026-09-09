@@ -86,6 +86,18 @@ test("does not replace a legacy lock published after validation", async () => {
   } finally { unlinkSync(path); }
 });
 
+test("does not migrate a legacy lock without stable file identity", async () => {
+  const path = lockPath(); writeLegacyLock(path, "", true);
+  let callbacks = 0;
+  try {
+    await assert.rejects(withProjectLock(path, () => { callbacks += 1; }, { timeoutMs: 0, testHooks: {
+      overrideLegacyFileIdentity: (identity) => ({ ...identity, dev: 0, ino: 0 }),
+    } }), (error: unknown) => error instanceof ProjectLockError && error.code === "LOCK_TIMEOUT");
+    assert.equal(callbacks, 0);
+    assert.equal(statSync(path).isFile(), true);
+  } finally { unlinkSync(path); }
+});
+
 test("recovers stale metadata-less crash windows without removing a successor", async () => {
   const empty = lockPath(); mkdirSync(empty); makeStale(empty); await withProjectLock(empty, () => undefined); assert.throws(() => statSync(empty), /ENOENT/);
   const incomplete = lockPath(); mkdirSync(incomplete); mkdirSync(ownerPath(incomplete, "crashed")); makeStale(incomplete); await withProjectLock(incomplete, () => undefined); assert.throws(() => statSync(incomplete), /ENOENT/);

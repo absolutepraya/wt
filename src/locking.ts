@@ -10,7 +10,7 @@ export class ProjectLockError extends Error {
 }
 
 interface LockMetadata { pid: number; hostname: string; token: string; startedAt: string; }
-interface LegacyFileIdentity { dev: number; ino: number; ctimeMs: number; birthtimeMs: number; }
+interface LegacyFileIdentity { dev: number; ino: number; }
 interface LockSnapshot { legacyFile?: boolean; legacySize?: number; legacyIdentity?: LegacyFileIdentity; ownerDirectory?: string; metadataPath?: string; metadataText?: string; metadata?: LockMetadata; modifiedAt: number; }
 export interface ProjectLockTestHooks {
   beforeFirstAcquireAttempt?: () => Promise<void> | void;
@@ -19,6 +19,7 @@ export interface ProjectLockTestHooks {
   beforeStaleCleanup?: () => Promise<void> | void;
   beforeLegacyLockMigration?: () => Promise<void> | void;
   afterLegacyLockValidation?: () => Promise<void> | void;
+  overrideLegacyFileIdentity?: (identity: LegacyFileIdentity) => LegacyFileIdentity;
   beforeEmptyLockReplacement?: () => Promise<void> | void;
   beforeOuterRmdir?: () => Promise<void> | void;
   afterRefreshRead?: () => Promise<void> | void;
@@ -41,10 +42,9 @@ function ownerDirectory(lockPath: string, token: string): string { return join(l
 function metadataPath(lockPath: string, token: string): string { return join(ownerDirectory(lockPath, token), METADATA_FILE); }
 function candidateDirectory(lockPath: string, token: string): string { return join(dirname(lockPath), `.${basename(lockPath)}.${OWNER_PREFIX}${token}.tmp`); }
 function legacyBackupPath(lockPath: string, token: string): string { return join(dirname(lockPath), `.${basename(lockPath)}.legacy-${token}`); }
-function legacyFileIdentity(value: { dev: number; ino: number; ctimeMs: number; birthtimeMs: number }): LegacyFileIdentity { return { dev: value.dev, ino: value.ino, ctimeMs: value.ctimeMs, birthtimeMs: value.birthtimeMs }; }
+function legacyFileIdentity(value: { dev: number; ino: number }): LegacyFileIdentity { return { dev: value.dev, ino: value.ino }; }
 function sameLegacyFileIdentity(current: LegacyFileIdentity, expected: LegacyFileIdentity): boolean {
-  if (current.dev !== 0 || current.ino !== 0 || expected.dev !== 0 || expected.ino !== 0) return current.dev === expected.dev && current.ino === expected.ino;
-  return current.ctimeMs === expected.ctimeMs && current.birthtimeMs === expected.birthtimeMs;
+  return (current.dev !== 0 || current.ino !== 0) && (expected.dev !== 0 || expected.ino !== 0) && current.dev === expected.dev && current.ino === expected.ino;
 }
 
 class LockContendedError extends Error {}
@@ -65,12 +65,16 @@ function ownerIsDead(metadata: LockMetadata): boolean {
   catch (error: unknown) { return !isRecord(error) || error.code === "ESRCH"; }
 }
 
-async function inspectLock(lockPath: string): Promise<LockSnapshot | undefined> {
+async function inspectLock(lockPath: string, hooks?: ProjectLockTestHooks): Promise<LockSnapshot | undefined> {
   let rootMtime: number;
   try {
     const root = await stat(lockPath);
     if (!root.isDirectory()) {
-      if (root.isFile()) return { legacyFile: true, legacySize: root.size, legacyIdentity: legacyFileIdentity(root), modifiedAt: root.mtimeMs };
+      if (root.isFile()) {
+        const actualIdentity = legacyFileIdentity(root);
+        const identity = hooks?.overrideLegacyFileIdentity?.(actualIdentity) ?? actualIdentity;
+        return { legacyFile: true, legacySize: root.size, legacyIdentity: identity, modifiedAt: root.mtimeMs };
+      }
       throw new ProjectLockError("LOCK_STALE_OWNER", `Project lock ${lockPath} is not a directory.`);
     }
     rootMtime = root.mtimeMs;
@@ -216,7 +220,7 @@ async function migrateLegacyLock(lockPath: string, candidatePath: string, snapsh
 type StaleRecovery = "none" | "removed" | "acquired";
 
 async function recoverStaleLock(lockPath: string, candidatePath: string, token: string, hooks?: ProjectLockTestHooks): Promise<StaleRecovery> {
-  const snapshot = await inspectLock(lockPath);
+  const snapshot = await inspectLock(lockPath, hooks);
   if (!snapshot) return "none";
   if (Date.now() - snapshot.modifiedAt <= STALE_MS) return "none";
   if (snapshot.metadata && !ownerIsDead(snapshot.metadata)) return "none";
