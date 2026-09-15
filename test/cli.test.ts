@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
 import { runCli } from "../src/cli.js";
+import { normalizePath } from "../src/paths.js";
 import type { CliContext } from "../src/types.js";
 import { createGitFixture } from "./fixtures.js";
 
@@ -67,6 +68,33 @@ test("CLI awaits lifecycle dispatch and preserves command aliases and flags", as
   const removed = capturedContext(repo, home);
   assert.equal(await runCli(["remove", "cli-space", "--force", "--keep-branch"], removed), 0);
   assert.match(removed.output().stdout, /Removed worktree: cli-space/);
+});
+
+test("ls supports the agent-readable output format", async () => {
+  const repo = repository();
+  const listed = capturedContext(repo);
+
+  assert.equal(await runCli(["ls", "--format", "agent"], listed), 0);
+  const output = listed.output().stdout;
+  assert.match(output, /Managed worktrees:/);
+  assert.match(output, /1\. name: \(main\)/);
+  assert.ok(output.includes(`path: ${normalizePath(resolve(repo))}`));
+  assert.doesNotMatch(output, /╔|║|╚/);
+});
+
+test("ls keeps table as the default and rejects unknown formats", async () => {
+  const repo = repository();
+  const defaultListing = capturedContext(repo);
+  assert.equal(await runCli(["ls"], defaultListing), 0);
+  assert.match(defaultListing.output().stdout, /╔|║|╚/);
+
+  const explicitTable = capturedContext(repo);
+  assert.equal(await runCli(["list", "--format", "table"], explicitTable), 0);
+  assert.match(explicitTable.output().stdout, /╔|║|╚/);
+
+  const invalid = capturedContext(repo);
+  assert.equal(await runCli(["ls", "--format", "yaml"], invalid), 2);
+  assert.match(invalid.output().stderr, /Usage: wt ls \[--format table\|agent\]/);
 });
 
 test("CLI returns stable usage and operational exit codes", async () => {

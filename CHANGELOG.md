@@ -15,6 +15,8 @@
   GitHub Release assets.
 - Added safe migration for stale empty lock files created by the historical
   Python standalone CLI.
+- Added terminal-width-aware human table output and an untruncated
+  `wt ls --format agent` listing for coding agents.
 
 ## Historical v0.1.0
 
