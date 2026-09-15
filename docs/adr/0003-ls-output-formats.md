@@ -42,4 +42,6 @@ where those fields exist.
 The `--format` option is part of the public `ls` and `list` command contract.
 The human renderer must remain width-safe as terminal sizes change. The
 shipped WT skill directs agents to the agent format while leaving the default
-table available for humans.
+table available for humans. The renderer measures terminal display cells,
+truncates only at grapheme boundaries, and uses a compact line-oriented
+fallback when a five-column box cannot fit.

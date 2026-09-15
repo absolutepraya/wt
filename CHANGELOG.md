@@ -17,6 +17,8 @@
   Python standalone CLI.
 - Added terminal-width-aware human table output and an untruncated
   `wt ls --format agent` listing for coding agents.
+- Made human listing width calculations Unicode-aware and added a compact
+  fallback for terminals narrower than the boxed table minimum.
 
 ## Historical v0.1.0
 

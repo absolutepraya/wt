@@ -95,7 +95,9 @@ read and act on the complete values.
 
 The default `wt ls` format is a human-oriented table. It remains the right
 choice for interactive terminal use, and it shrinks long cells with an
-ellipsis so its borders fit the detected terminal width. Use
+ellipsis so its borders fit the detected terminal width. It switches to a
+compact line-oriented layout when the terminal is too narrow to draw the
+five-column box safely. Use
 `wt ls --format table` when selecting the human format explicitly.
 
 ## Shell navigation

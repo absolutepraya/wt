@@ -5,6 +5,7 @@ import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
+import stringWidth from "string-width";
 import { runCd, runLs, runNew, runRm } from "../src/commands/index.js";
 import { ConfigurationError, SetupError } from "../src/errors.js";
 import { listWorktrees, systemGitRunner } from "../src/git.js";
@@ -49,6 +50,19 @@ function context(repository: Repository, cwd = repository.repo, terminalWidth?: 
   };
 }
 
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      if (index + 1 >= value.length || value.charCodeAt(index + 1)! < 0xDC00 || value.charCodeAt(index + 1)! > 0xDFFF) return true;
+      index += 1;
+    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+      return true;
+    }
+  }
+  return false;
+}
+
 test("ls keeps the human table within the available terminal width", async () => {
   const repository = makeRepository();
   await runNew(context(repository), { name: "this-is-a-very-long-feature-name", noSetup: true, cdAfterCreate: false });
@@ -58,7 +72,33 @@ test("ls keeps the human table within the available terminal width", async () =>
 
   assert.equal(await runLs(command), 0);
   const lines = command.output().stdout.trimEnd().split("\n");
-  assert.ok(lines.every((line) => line.length <= 60), lines.join("\n"));
+  assert.ok(lines.every((line) => stringWidth(line) <= 60), lines.join("\n"));
+});
+
+test("ls uses a compact layout below the boxed table minimum", async () => {
+  const repository = makeRepository();
+  for (let terminalWidth = 1; terminalWidth <= 20; terminalWidth += 1) {
+    const command = context(repository, repository.repo, terminalWidth);
+
+    assert.equal(await runLs(command), 0);
+    const output = command.output().stdout;
+    const lines = output.trimEnd().split("\n");
+    assert.ok(lines.every((line) => stringWidth(line) <= terminalWidth), `width ${terminalWidth}: ${output}`);
+    assert.doesNotMatch(output, /╔|║|╚/);
+  }
+});
+
+test("ls measures Unicode cells and truncates at grapheme boundaries", async () => {
+  const repository = makeRepository();
+  const unmanagedPath = join(repository.repo, ".worktrees", "界界界界界界界界🧪");
+  runGit(["worktree", "add", "-b", "raw/界界界界界界界界🧪", unmanagedPath, "main"], repository.repo);
+  const command = context(repository, repository.repo, 32);
+
+  assert.equal(await runLs(command), 0);
+  const output = command.output().stdout;
+  const lines = output.trimEnd().split("\n");
+  assert.ok(lines.every((line) => stringWidth(line) <= 32), output);
+  assert.equal(hasUnpairedSurrogate(output), false, output);
 });
 
 test("ls agent format includes unmanaged worktrees with full paths", async () => {

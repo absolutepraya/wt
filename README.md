@@ -296,7 +296,8 @@ Agents should use `wt new` without `--cd`. The successful output contains the wo
 When an agent needs to inspect existing worktrees, it should use
 `wt ls --format agent`. This returns numbered records with labeled fields and
 full absolute paths without box-drawing characters or terminal-width
-truncation. Humans can continue using the default table with `wt ls`.
+truncation. Humans can continue using the default table with `wt ls`, which
+switches to a compact line-oriented layout when a five-column box cannot fit.
 
 ## Development
 

@@ -6,6 +6,7 @@ import { loadState } from "../state.js";
 import type { CliContext } from "../types.js";
 import { writeOutput } from "../output.js";
 import { defaultWorktreeServices, type WorktreeServices } from "../worktrees.js";
+import stringWidth from "string-width";
 
 export type LsFormat = "table" | "agent";
 
@@ -24,13 +25,25 @@ interface ListedWorktree {
 
 function contextHome(context: CliContext): string | undefined { return context.env.HOME || context.env.USERPROFILE; }
 function contains(parent: string, child: string): boolean { const value = relative(parent, child); return value === "" || (!value.startsWith("..") && !isAbsolute(value)); }
+const ellipsis = "…";
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
 function truncate(value: string, width: number): string {
-  if (value.length <= width) return value;
-  if (width <= 1) return "…".slice(0, width);
-  return `${value.slice(0, width - 1)}…`;
+  if (stringWidth(value) <= width) return value;
+  if (width <= 0) return "";
+  const target = width - stringWidth(ellipsis);
+  let output = "";
+  for (const { segment } of graphemeSegmenter.segment(value)) {
+    if (stringWidth(output) + stringWidth(segment) > target) break;
+    output += segment;
+  }
+  return `${output}${ellipsis}`;
+}
+function padDisplay(value: string, width: number): string {
+  return `${value}${" ".repeat(Math.max(0, width - stringWidth(value)))}`;
 }
 function row(cells: string[], widths: number[]): string {
-  return `║${cells.map((cell, index) => ` ${truncate(cell, widths[index]!).padEnd(widths[index]!)} `).join("│")}║`;
+  return `║${cells.map((cell, index) => ` ${padDisplay(truncate(cell, widths[index]!), widths[index]!)} `).join("│")}║`;
 }
 function line(left: string, middle: string, right: string, widths: number[], fill: string): string {
   return `${left}${widths.map((width) => fill.repeat(width + 2)).join(middle)}${right}`;
@@ -46,6 +59,17 @@ function fitWidths(widths: number[], terminalWidth: number): number[] {
   }
   return fitted;
 }
+function compactRow(entry: ListedWorktree): string {
+  return entry.managed
+    ? [`${entry.slot}${entry.current ? " ✓" : ""}`, entry.name!, entry.branch, entry.relativePath, entry.ports!].join(" ")
+    : [entry.branch, entry.relativePath].join(" ");
+}
+function renderCompact(managed: ListedWorktree[], unmanaged: ListedWorktree[], terminalWidth: number): string {
+  const width = Math.max(1, terminalWidth);
+  const output = [truncate("Managed worktrees:", width), ...managed.map((entry) => truncate(compactRow(entry), width))];
+  if (unmanaged.length) output.push(truncate("Unmanaged worktrees:", width), ...unmanaged.map((entry) => truncate(compactRow(entry), width)));
+  return output.join("\n");
+}
 function renderTable(headers: string[], managed: ListedWorktree[], unmanaged: ListedWorktree[], terminalWidth: number): string {
   const managedRows = managed.map((entry) => [
     `${entry.slot}${entry.current ? " ✓" : ""}`,
@@ -56,8 +80,10 @@ function renderTable(headers: string[], managed: ListedWorktree[], unmanaged: Li
   ]);
   const unmanagedRows = unmanaged.map((entry) => ["", "", entry.branch, entry.relativePath, ""]);
   const allRows = [...managedRows, ...unmanagedRows];
-  const intrinsicWidths = headers.map((header, index) => Math.max(header.length, ...allRows.map((entry) => entry[index]!.length)));
-  const widths = fitWidths(intrinsicWidths, terminalWidth);
+  const width = Math.max(1, terminalWidth);
+  if (width < (4 * headers.length) + 1) return renderCompact(managed, unmanaged, width);
+  const intrinsicWidths = headers.map((header, index) => Math.max(stringWidth(header), ...allRows.map((entry) => stringWidth(entry[index]!))));
+  const widths = fitWidths(intrinsicWidths, width);
   const titleWidth = widths.reduce((sum, width) => sum + width + 3, -3);
   const output = [
     line("╔", "╤", "╗", widths, "═"),
@@ -68,7 +94,7 @@ function renderTable(headers: string[], managed: ListedWorktree[], unmanaged: Li
   if (unmanagedRows.length) {
     output.push(
       line("╠", "╧", "╣", widths, "═"),
-      `║ ${truncate("Unmanaged worktrees", titleWidth).padEnd(titleWidth)} ║`,
+      `║ ${padDisplay(truncate("Unmanaged worktrees", titleWidth), titleWidth)} ║`,
       line("╠", "╤", "╣", widths, "═"),
       ...unmanagedRows.map((entry) => row(entry, widths)),
     );
