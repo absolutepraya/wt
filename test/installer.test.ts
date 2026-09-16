@@ -9,6 +9,7 @@ import { test } from "node:test";
 
 const repository = process.cwd();
 const installer = join(repository, "install.sh");
+const packageVersion = (JSON.parse(readFileSync(join(repository, "package.json"), "utf8")) as { version: string }).version;
 
 interface Server {
   baseUrl: string;
@@ -334,7 +335,7 @@ test("local source installation uses dist and reports the exact missing-dist dia
       env: { ...process.env, HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "xdg"), PREFIX: join(root, "prefix"), WT_CONFIG_DIR: join(root, "config") },
     });
     assert.equal(local.status, 0, local.stderr);
-    assert.equal(JSON.parse(readFileSync(join(root, "config", "install.json"), "utf8")).tag, "v0.3.3");
+    assert.equal(JSON.parse(readFileSync(join(root, "config", "install.json"), "utf8")).tag, `v${packageVersion}`);
 
     const incomplete = join(root, "source");
     mkdirSync(incomplete, { recursive: true });
