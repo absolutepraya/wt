@@ -173,6 +173,8 @@ wt new --skip-setup             alias for --no-setup
 wt new --cd                     navigate the interactive shell after creation
 
 wt ls                           list managed and unmanaged Git worktrees
+wt ls --format table            explicit human-readable table output
+wt ls --format agent            numbered labeled output for coding agents
 wt list                         alias for ls
 wt cd                           print the current or main worktree path
 wt cd <name>                    print a named worktree path
@@ -290,6 +292,12 @@ npx skills add absolutepraya/wt --skill wt --global --agent codex
 ```
 
 Agents should use `wt new` without `--cd`. The successful output contains the worktree path to use for subsequent commands because a child process cannot change the agent host's working directory.
+
+When an agent needs to inspect existing worktrees, it should use
+`wt ls --format agent`. This returns numbered records with labeled fields and
+full absolute paths without box-drawing characters or terminal-width
+truncation. Humans can continue using the default table with `wt ls`, which
+switches to a compact line-oriented layout when a five-column box cannot fit.
 
 ## Development
 

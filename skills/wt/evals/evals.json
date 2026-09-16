@@ -1,0 +1,37 @@
+{
+  "skill_name": "wt",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Create an isolated worktree for a bug fix called narrow-ls. The repository has a .wt/config.toml.",
+      "expected_output": "The agent checks the WT configuration and uses wt new narrow-ls without raw git worktree add.",
+      "files": [],
+      "expectations": [
+        "Uses wt new narrow-ls for a configured repository",
+        "Does not use raw git worktree add",
+        "Uses the absolute worktree path printed by WT for subsequent work"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "List the worktrees for me as an agent. The normal table is too wide and hard to read.",
+      "expected_output": "The agent uses wt ls --format agent and relies on its numbered labeled records and full paths.",
+      "files": [],
+      "expectations": [
+        "Uses wt ls --format agent",
+        "Does not ask the user to parse the human box-drawing table",
+        "Recognizes that the agent format includes managed and unmanaged worktrees"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "I am looking at the worktrees in my terminal. Show me the normal human-friendly list.",
+      "expected_output": "The agent uses the default wt ls table or explicitly selects wt ls --format table.",
+      "files": [],
+      "expectations": [
+        "Uses the human table format for an interactive human request",
+        "Does not force the agent-readable format on the user"
+      ]
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { runCd, runLs, runNew, runRm, runUpdate } from "./commands/index.js";
+import type { LsFormat } from "./commands/ls.js";
 import { UsageError, WtError } from "./errors.js";
 import { writeOutput } from "./output.js";
 import { renderShellInit } from "./shell-init.js";
@@ -26,7 +27,7 @@ Run \`wt <command> -h\` for command-specific options.`;
 
 const COMMAND_HELP: Record<string, string> = {
   new: "Usage: wt new [name] [-b branch] [--from remote-branch] [--no-setup|--skip-setup] [--cd]",
-  ls: "Usage: wt ls",
+  ls: "Usage: wt ls [--format table|agent]",
   cd: "Usage: wt cd [name]",
   rm: "Usage: wt rm <name> [--force] [--keep-branch]",
   update: "Usage: wt update [--check]",
@@ -43,6 +44,7 @@ function processContext(): CliContext {
       stdin: process.stdin,
       stdoutIsTTY: Boolean(process.stdout.isTTY),
       stdinIsTTY: Boolean(process.stdin.isTTY),
+      terminalWidth: process.stdout.columns,
     },
   };
 }
@@ -96,10 +98,15 @@ async function dispatch(command: string, args: string[], context: CliContext): P
     }
     case "ls":
     case "list": {
-      const { values, positionals } = parseCommandArgs(args, { help: { type: "boolean", short: "h" } });
+      const { values, positionals } = parseCommandArgs(args, {
+        format: { type: "string" },
+        help: { type: "boolean", short: "h" },
+      });
       if (values.help) { printHelp(context, "ls"); return 0; }
       requirePositionals(positionals, 0, 0, COMMAND_HELP.ls);
-      return await runLs(context);
+      const format = (values.format as string | undefined) ?? "table";
+      if (format !== "table" && format !== "agent") throw new UsageError(COMMAND_HELP.ls);
+      return await runLs(context, { format: format as LsFormat });
     }
     case "cd": {
       const { values, positionals } = parseCommandArgs(args, { help: { type: "boolean", short: "h" } });

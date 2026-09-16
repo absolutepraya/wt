@@ -1,6 +1,6 @@
 ---
 name: wt
-description: Use when the user wants to create, list, enter, or remove a Git worktree for parallel feature, bug, or review work through the wt CLI. Triggers on create a worktree, spin up a worktree, wt new, new worktree, isolate this in a worktree, check out a branch in a worktree, or remove a worktree.
+description: Use when the user wants to create, list, enter, or remove a Git worktree for parallel feature, bug, or review work through the wt CLI, or asks for human table versus agent-readable worktree output. Triggers on create a worktree, spin up a worktree, wt new, new worktree, isolate this in a worktree, check out a branch in a worktree, list worktrees, inspect worktree output, or remove a worktree.
 ---
 
 # wt Agent Skill
@@ -63,8 +63,10 @@ wt new --from feature-x                 # use an existing remote branch
 wt new --skip-setup                     # create without setup commands
 wt new --no-setup                       # alias for --skip-setup
 
-wt ls                                   # list managed and unmanaged worktrees
-wt list                                 # alias for ls
+wt ls                                   # human-readable table of managed and unmanaged worktrees
+wt ls --format table                    # explicit human-readable table
+wt ls --format agent                    # agent-readable numbered field list
+wt list                                 # alias for ls, including --format
 wt cd                                   # navigate to the current or main worktree
 wt cd <name>                            # navigate to an existing worktree
 
@@ -81,6 +83,22 @@ Run `wt <command> --help` for command-specific options. Agents should use
 `wt new` without `--cd`: a child process cannot change the working directory
 of its parent agent process. Use the absolute worktree path printed by WT for
 subsequent commands.
+
+## Listing output
+
+Use `wt ls --format agent` whenever an agent needs to inspect worktrees. It
+returns numbered records with labeled fields, full absolute paths, current
+worktree state, slot numbers, branches, and port offsets. It also includes
+unmanaged worktrees under a separate heading. This format is intentionally
+free of box-drawing characters and terminal-width truncation so an agent can
+read and act on the complete values.
+
+The default `wt ls` format is a human-oriented table. It remains the right
+choice for interactive terminal use, and it shrinks long cells with an
+ellipsis so its borders fit the detected terminal width. It switches to a
+compact line-oriented layout when the terminal is too narrow to draw the
+five-column box safely. Use
+`wt ls --format table` when selecting the human format explicitly.
 
 ## Shell navigation
 

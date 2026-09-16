@@ -5,10 +5,11 @@ import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
+import stringWidth from "string-width";
 import { runCd, runLs, runNew, runRm } from "../src/commands/index.js";
 import { ConfigurationError, SetupError } from "../src/errors.js";
 import { listWorktrees, systemGitRunner } from "../src/git.js";
-import { projectId, statePaths } from "../src/paths.js";
+import { normalizePath, projectId, statePaths } from "../src/paths.js";
 import { createEmptyState, loadState, saveState } from "../src/state.js";
 import type { CliContext } from "../src/types.js";
 import { createGitFixture, runGit } from "./fixtures.js";
@@ -36,7 +37,7 @@ function makeRepository(body = ""): Repository {
   return { repo: fixture.repo, home: mkdtempSync(join(tmpdir(), "wt-command-home-")) };
 }
 
-function context(repository: Repository, cwd = repository.repo): CliContext & { output: () => { stdout: string; stderr: string } } {
+function context(repository: Repository, cwd = repository.repo, terminalWidth?: number): CliContext & { output: () => { stdout: string; stderr: string } } {
   const stdout = new PassThrough(); const stderr = new PassThrough();
   let stdoutText = ""; let stderrText = "";
   stdout.on("data", (chunk) => { stdoutText += String(chunk); });
@@ -44,10 +45,76 @@ function context(repository: Repository, cwd = repository.repo): CliContext & { 
   return {
     cwd,
     env: { ...process.env, HOME: repository.home, USER: "test" },
-    io: { stdout, stderr, stdin: process.stdin, stdoutIsTTY: false, stdinIsTTY: false },
+    io: { stdout, stderr, stdin: process.stdin, stdoutIsTTY: false, stdinIsTTY: false, terminalWidth },
     output: () => ({ stdout: stdoutText, stderr: stderrText }),
   };
 }
+
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      if (index + 1 >= value.length || value.charCodeAt(index + 1)! < 0xDC00 || value.charCodeAt(index + 1)! > 0xDFFF) return true;
+      index += 1;
+    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+      return true;
+    }
+  }
+  return false;
+}
+
+test("ls keeps the human table within the available terminal width", async () => {
+  const repository = makeRepository();
+  await runNew(context(repository), { name: "this-is-a-very-long-feature-name", noSetup: true, cdAfterCreate: false });
+  const unmanagedPath = join(repository.repo, ".worktrees", "unmanaged-with-a-long-name");
+  runGit(["worktree", "add", "-b", "raw/unmanaged-with-a-long-name", unmanagedPath, "main"], repository.repo);
+  const command = context(repository, repository.repo, 60);
+
+  assert.equal(await runLs(command), 0);
+  const lines = command.output().stdout.trimEnd().split("\n");
+  assert.ok(lines.every((line) => stringWidth(line) <= 60), lines.join("\n"));
+});
+
+test("ls uses a compact layout below the boxed table minimum", async () => {
+  const repository = makeRepository();
+  for (let terminalWidth = 1; terminalWidth <= 20; terminalWidth += 1) {
+    const command = context(repository, repository.repo, terminalWidth);
+
+    assert.equal(await runLs(command), 0);
+    const output = command.output().stdout;
+    const lines = output.trimEnd().split("\n");
+    assert.ok(lines.every((line) => stringWidth(line) <= terminalWidth), `width ${terminalWidth}: ${output}`);
+    assert.doesNotMatch(output, /╔|║|╚/);
+  }
+});
+
+test("ls measures Unicode cells and truncates at grapheme boundaries", async () => {
+  const repository = makeRepository();
+  const unmanagedPath = join(repository.repo, ".worktrees", "界界界界界界界界🧪");
+  runGit(["worktree", "add", "-b", "raw/界界界界界界界界🧪", unmanagedPath, "main"], repository.repo);
+  const command = context(repository, repository.repo, 32);
+
+  assert.equal(await runLs(command), 0);
+  const output = command.output().stdout;
+  const lines = output.trimEnd().split("\n");
+  assert.ok(lines.every((line) => stringWidth(line) <= 32), output);
+  assert.equal(hasUnpairedSurrogate(output), false, output);
+});
+
+test("ls agent format includes unmanaged worktrees with full paths", async () => {
+  const repository = makeRepository();
+  const unmanagedPath = join(repository.repo, ".worktrees", "unmanaged");
+  runGit(["worktree", "add", "-b", "raw/unmanaged", unmanagedPath, "main"], repository.repo);
+  const command = context(repository);
+
+  assert.equal(await runLs(command, { format: "agent" }), 0);
+  const output = command.output().stdout;
+  assert.match(output, /Managed worktrees:/);
+  assert.match(output, /Unmanaged worktrees:/);
+  assert.match(output, /raw\/unmanaged/);
+  assert.ok(output.includes(`path: ${normalizePath(unmanagedPath)}`));
+  assert.doesNotMatch(output, /╔|║|╚/);
+});
 
 function statePath(repository: Repository): string { return statePaths(projectId(repository.repo), repository.home).statePath; }
 
