@@ -9,7 +9,8 @@
       "expectations": [
         "Uses wt new narrow-ls for a configured repository",
         "Does not use raw git worktree add",
-        "Uses the absolute worktree path printed by WT for subsequent work"
+        "Uses the absolute worktree path printed by WT for subsequent work",
+        "Runs subsequent bug-fix work from the new worktree rather than the main worktree"
       ]
     },
     {
@@ -31,6 +32,18 @@
       "expectations": [
         "Uses the human table format for an interactive human request",
         "Does not force the agent-readable format on the user"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Create a worktree called release-check and then inspect the new checkout and run its tests. I did not ask you to keep working in main.",
+      "expected_output": "The agent creates the worktree with wt new, captures the absolute path from WT output, and runs the inspection and tests with that path as the working directory.",
+      "files": [],
+      "expectations": [
+        "Uses wt new release-check",
+        "Captures and uses the absolute path printed by WT",
+        "Runs all follow-up commands from the new worktree",
+        "Does not continue task changes in the main worktree"
       ]
     }
   ]
