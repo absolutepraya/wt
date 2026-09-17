@@ -4,3 +4,5 @@ CONTEXT.md
 node_modules/
 dist/
 *.tgz
+__pycache__/
+*.py[cod]
