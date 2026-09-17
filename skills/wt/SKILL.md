@@ -1,6 +1,6 @@
 ---
 name: wt
-description: Use when the user wants to create, list, enter, or remove a Git worktree for parallel feature, bug, or review work through the wt CLI, or asks for human table versus agent-readable worktree output. Triggers on create a worktree, spin up a worktree, wt new, new worktree, isolate this in a worktree, check out a branch in a worktree, list worktrees, inspect worktree output, or remove a worktree.
+description: Use when the user wants to create, list, enter, or remove a Git worktree for parallel feature, bug, or review work through the wt CLI, or asks for human table versus agent-readable worktree output. Triggers on create a worktree, spin up a worktree, wt new, new worktree, isolate this in a worktree, check out a branch in a worktree, list worktrees, inspect worktree output, or remove a worktree. After creating a worktree, use that worktree as the working directory for all follow-up work unless the user explicitly says otherwise.
 ---
 
 # wt Agent Skill
@@ -81,8 +81,21 @@ wt update                               # update a standalone installation
 
 Run `wt <command> --help` for command-specific options. Agents should use
 `wt new` without `--cd`: a child process cannot change the working directory
-of its parent agent process. Use the absolute worktree path printed by WT for
-subsequent commands.
+of its parent agent process.
+
+## Worktree handoff
+
+After a successful `wt new`, treat the printed absolute path as the working
+directory for the rest of the task. Read the path from WT's output, then run
+all subsequent inspection, editing, testing, Git, and tooling commands from
+that worktree. Do not continue making task changes in the main worktree unless
+the user explicitly asks for that exception. This keeps the new branch
+isolated and prevents changes from landing on the wrong checkout.
+
+If a child process cannot change the parent agent's directory, pass the path
+as the command's working directory or use an absolute path. Do not infer the
+path from the worktree name when WT has already printed the authoritative
+path.
 
 ## Listing output
 
