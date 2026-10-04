@@ -74,3 +74,17 @@ Node runtime.
 Keep `README.md`, `CHANGELOG.md`, `docs/adr/`, `docs/RELEASING.md`, and
 `skills/wt/SKILL.md` consistent with the bundled Node distribution, shell
 initializers, migration guidance, and release contract.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live in GitHub Issues for `absolutepraya/wt`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five default triage labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use a single-context layout with a root `GLOSSARY.md` and `docs/adr/`. See `docs/agents/domain.md`.
