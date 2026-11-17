@@ -19,6 +19,8 @@
   `wt ls --format agent` listing for coding agents.
 - Made human listing width calculations Unicode-aware and added a compact
   fallback for terminals narrower than the boxed table minimum.
+- Added the wt logo as light and dark SVGs under `assets/` and refreshed the
+  README around it.
 
 ## Historical v0.1.0
 
